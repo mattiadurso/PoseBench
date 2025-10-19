@@ -96,6 +96,7 @@ def evaluate_scene(target_rec, input_rec, deg=True):
             # compute the error
             q_err, t_err = evaluate_R_t(R_pred, t_pred, R_target, t_target, deg=deg)
             max_error = max(q_err, t_err)
+            max_error = max_error if max_error < 10 else np.inf
 
         # append to the dataframe
         df["image1"].append(image_1_path)
@@ -140,7 +141,7 @@ def eval_colmap_model(
     if return_df:
         return AUC_score_max, df
 
-    return AUC_score_max
+    return AUC_score_max, None
 
 
 def eval_colmap_model_all_scenes(
@@ -150,6 +151,7 @@ def eval_colmap_model_all_scenes(
     target_folder="sparse",
     thrs=[0.5, 1, 3, 5, 10],
     AUC_col="max_error",
+    return_df=False,
     n_jobs=-1,
 ) -> pd.DataFrame:
     """
@@ -191,9 +193,9 @@ def eval_colmap_model_all_scenes(
     print(f"Evaluating {len(valid_pairs)} valid scenes.")
 
     # Use joblib to parallelize the evaluation of each scene
-    results = Parallel(n_jobs=n_jobs)(
+    parallel_results = Parallel(n_jobs=n_jobs)(
         delayed(eval_colmap_model)(
-            input, target, thrs=thrs, return_df=False, AUC_col=AUC_col
+            input, target, thrs=thrs, return_df=return_df, AUC_col=AUC_col
         )
         for input, target in tqdm(
             valid_pairs,
@@ -201,7 +203,17 @@ def eval_colmap_model_all_scenes(
             total=len(valid_pairs),
         )
     )
+    # Unpack the results
+    results = [r[0] for r in parallel_results]
+    dfs = [r[1] for r in parallel_results] if return_df else None
 
+    if return_df:
+        # Save individual dataframes if needed
+        dfs_path = Path(input_path + "_results_dfs")
+        dfs_path.mkdir(parents=True, exist_ok=True)
+        for scene_name, df in zip(valid_scenes, dfs):
+            df.to_csv(dfs_path / f"results_{scene_name}.csv", index=False)
+        print(f"Saved individual result dataframes to {dfs_path}")
     # Process results and create the DataFrame
     res = {}
     for auc_scores, scene_name in zip(results, valid_scenes):
