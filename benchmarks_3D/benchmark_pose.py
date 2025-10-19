@@ -1,19 +1,17 @@
 from __future__ import annotations
 
 import os
-
-import pycolmap
+import time
 import logging
+import pycolmap
 import argparse
 
-import glob
-import time
-import pandas as pd
 import numpy as np
+import pandas as pd
 from joblib import Parallel, delayed
 
-from tqdm.auto import tqdm
 from pathlib import Path
+from tqdm.auto import tqdm
 from itertools import combinations
 from utils_benchmark_pose import compute_AUC, evaluate_R_t
 

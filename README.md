@@ -29,6 +29,10 @@ pip install \
   numpy==1.26.4 \
   opencv-python==4.11.0.86 \
   pandas==2.2.3 
+
+# for benchmark_3D
+pip install \
+  pycolmap==3.11
   
 
 ## Suggested but optional. 

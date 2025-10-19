@@ -331,8 +331,8 @@ def plot_imgs_and_kpts(
                     va="center",
                 )
 
-        plt.scatter(kpt1[:, 0], kpt1[:, 1], c="r", s=25)
-        plt.scatter(kpt2[:, 0] + img1.shape[1] + space, kpt2[:, 1], c="r", s=25)
+        plt.scatter(kpt1[:, 0], kpt1[:, 1], c="r", s=2)
+        plt.scatter(kpt2[:, 0] + img1.shape[1] + space, kpt2[:, 1], c="r", s=2)
 
     if matches:
         if highlight_bad_matches is not None:
@@ -398,9 +398,9 @@ def plot_imgs_and_kpts(
                 plt.plot(
                     [kpt1[i, 0], kpt2[i, 0] + img1.shape[1] + space],
                     [kpt1[i, 1], kpt2[i, 1]],
-                    c="g",
-                    linewidth=1,
-                    alpha=0.85,
+                    c="b",
+                    linewidth=0.25,
+                    alpha=0.75,
                 )
 
     plt.axis("off" if axis else "on")

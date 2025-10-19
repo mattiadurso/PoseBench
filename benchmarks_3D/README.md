@@ -22,3 +22,7 @@ python benchmarks_3D/benchmark_pose.py \
 ```
 
 If the sets of scenes are not identical, only the common scenes are tested.
+
+NOTICE: 
+- Models need to be in COLMAP format (cameras, images, points3D)
+- Images names need to correspond, e.g. both include folder or not.
