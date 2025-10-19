@@ -167,6 +167,7 @@ That’s it, you’re ready to benchmark.
 * [ ] IMC
     - Add multiview support, now only stereo
 * [ ] Add support for matchers (LoFTR, RoMA, etc) by changing feature extraction method and separating kpts/depth dicts. No need to repead depth extraction.
+* [ ] Enable partial pose estimation with images in input scene (due to subsample).
 
 
 
