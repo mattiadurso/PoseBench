@@ -65,7 +65,7 @@ pip install \
 ```
 Other dependencies might be related to third party specific methods. 
 
-### 2) Download the Wrappers and Benchmarks
+### 2) Download Methods and Data
 
 Edit `download_wrappers.py` to choose which feature extractor to download. An empty list means all methods listed in `download_wrappers.yaml`. Then, to download __all__ benchmark data and/or code, run the following:
 
@@ -73,33 +73,34 @@ Edit `download_wrappers.py` to choose which feature extractor to download. An em
 python download_wrappers.py && \
 bash bash/download_all.sh
 ```
-To download only one benchmark, use the corresponding bash file in ```bash/```. The deafult wrapper is `disk-kornia`, which is already available when installing Kornia, and can be used to test if everything works.
+To download only one benchmark, use the corresponding bash file in ```bash/```. The deafult wrapper is `disk-kornia`, which is already available when installing Kornia, and can be used to test if everything works. To downalod only one dataset check ```bash/```.
 
 ### 3) Test in the Notebook
 In `demo.ipynb`, it is possible to test the wrappers on images from the Graz High-Resolution Benchmark, visualizing keypoints/matches and sanity-checking that everything works.
 
-## Feature Extraction Methods
+## Methods
 
 Currently, the following methods are supported with a wrapper:
+### Sparse Methods
 
 #### **SIFT**
 - **[Paper](https://en.wikipedia.org/wiki/Scale-invariant_feature_transform)**: David Lowe — *Distinctive Image Features from Scale-Invariant Keypoints*
 - **[Implementation](https://github.com/colmap/pycolmap)**: PyCOLMAP (provides bindings for extracting/matching SIFT features via Python; supports CPU by default (quite slow), optional CUDA).
 
 #### **SuperPoint**
-- **[Paper](https://arxiv.org/abs/1712.07629)**: Daniel DeTone, Tomasz Malisiewicz & Andrew Rabinovich — *SuperPoint: Self-Supervised Interest Point Detection and Description* (CVPR 2018 workshop; arXiv 2017)
+- **[Paper](https://arxiv.org/abs/1712.07629)**: Daniel DeTone et al.— *SuperPoint: Self-Supervised Interest Point Detection and Description* (CVPR 2018 workshop; arXiv 2017)
 - **[Implementation](https://github.com/magicleap/SuperGluePretrainedNetwork/blob/master/models/)**: From the SuperGlue GitHub repository.
 
 #### **DISK**
-- **[Paper](https://arxiv.org/abs/2006.13566)**: Michał J. Tyszkiewicz, Pascal Fua & Eduard Trulls — *DISK: Learning Local Features with Policy Gradient* (NeurIPS 2020)
-- **[Implementation](https://github.com/cvlab-epfl/disk)**: Official EPFL CVLAB GitHub repository containing training and inference code.
+- **[Paper](https://arxiv.org/abs/2006.13566)**: Michał J. Tyszkiewicz et al. — *DISK: Learning Local Features with Policy Gradient* (NeurIPS 2020)
+- **[Implementation](https://github.com/kornia/kornia)**: Using Kornia library.
 
 #### **RIPE**
 - **[Paper](https://arxiv.org/abs/2507.04839)**: Fraunhofer HHI team — *RIPE: Reinforcement Learning on Unlabeled Image Pairs* (ICCV 2025)
 - **[Implementation](https://github.com/fraunhoferhhi/RIPE)**: Fraunhofer HHI GitHub repository.
 
 #### **DeDoDe**
-- **[Paper](https://arxiv.org/abs/2308.08479)**: Johan Edstedt, Georg Bökman, Mårten Wadenbäck & Michael Felsberg — *DeDoDe: Detect, Don’t Describe — Describe, Don’t Detect for Local Feature Matching* (arXiv 2023)
+- **[Paper](https://arxiv.org/abs/2308.08479)**: Johan Edstedt et el. — *DeDoDe: Detect, Don’t Describe — Describe, Don’t Detect for Local Feature Matching* (arXiv 2023)
 - **[Implementation](https://github.com/Parskatt/DeDoDe)**: Parskatt’s GitHub repository with code, training scripts, and pretrained weights.
 - **Note:** Both -B and -G descriptor models proposed in the paper are available. Repeatability results might slightly change since -G expects images to have edges multiple of 14.
 
@@ -107,13 +108,28 @@ Currently, the following methods are supported with a wrapper:
 - **[Paper](https://arxiv.org/abs/2304.03608)**: Xiaoming Zhao et al. — *ALIKED: A Lighter Keypoint and Descriptor Extraction Network via Deformable Transformation* (2023)
 - **[Implementation](https://github.com/Shiaoming/ALIKED)**: Shiaoming’s GitHub repo for the Python version.
 
+### Deep Matchers 
+Notice: these methods are supported only for Graz4K, MegaDepth-1500, MegaDepth-View, Megadepth Air-to-Ground, ScanNet-1500 benchmarks.
+
+#### **LoFTR**
+- **[Paper](https://arxiv.org/abs/2104.00680)**: Jiaming Sun et al. — *LoFTR: Detector-Free Local Feature Matching with Transformers* (CVPR 2021)
+- **[Implementation](https://github.com/kornia/kornia)**: Using Kornia library.
+
+#### **LightGlue**
+- **[Paper](https://arxiv.org/abs/2306.13643)**: Philipp Lindenberger et al. — *LightGlue: Local Feature Matching at Light Speed* (ICCV 2023)
+- **[Implementation](https://github.com/kornia/kornia)**: Using Kornia library.
+
+#### **RoMa**
+- **[Paper](https://arxiv.org/abs/2305.15404)**: Johan Edstedt et al. — *RoMa: Robust Dense Feature Matching* (CVPR 2024)
+- **[Implementation](https://github.com/Parskatt/RoMa)**: Using official implementation.
+
 ## Supported Benchmarks
 
 After downloading the target methods and verifying that the wrapper exists and runs correctly, the following benchmarks are supported:
 
 ### Benchmarks_2D: 
 
-- Graz High-Resolution Benchmark
+- Graz4K
 - MegaDepth-1500
 - MegaDepth-View 
 - Megadepth Air-to-Ground
@@ -170,7 +186,6 @@ That’s it, you’re ready to benchmark.
 #### Benchmarks
 * [ ] IMC
     - Add multiview support, now only stereo
-* [ ] Add support for matchers (LoFTR, RoMA, etc) by changing feature extraction method and separating kpts/depth dicts. No need to repead depth extraction.
 * [ ] Enable partial pose estimation with images in input scene (due to subsample).
 
 
