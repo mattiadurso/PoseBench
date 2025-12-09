@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+from tabnanny import verbose
 import time
 import logging
 import pycolmap
@@ -19,7 +20,7 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 
-def evaluate_scene(target_rec, input_rec, deg=True):
+def evaluate_scene(target_rec, input_rec, deg=True, verbose=False):
     """
     Given two dictionaries {"image_idx":{qvec, tvec}}, evaluate the relative pose between all the possible pairs of images.
     Args:
@@ -28,6 +29,7 @@ def evaluate_scene(target_rec, input_rec, deg=True):
         deg: if True, the errors are returned in degrees else in radians. Default is True.
     Returns:
         df: dataframe with the relative pose errors with keys {image1, image2, q_error, t_error}.
+        num_images: number of images in the target set.
     """
 
     df = {
@@ -48,7 +50,10 @@ def evaluate_scene(target_rec, input_rec, deg=True):
             (image_1_path in input_images) and (image_2_path in input_images)
         ):  # working?
             q_err, t_err, max_error = np.inf, np.inf, np.inf
-            logger.info(f"Image {image_1_path} or {image_2_path} not in input model.")
+            if verbose:
+                logger.info(
+                    f"Image {image_1_path} or {image_2_path} not in input model."
+                )
         else:
             # get the rotation and translation for two images (target)
             R1_target, t1_target = (
@@ -103,11 +108,16 @@ def evaluate_scene(target_rec, input_rec, deg=True):
         df["t_error"].append(t_err)
         df["max_error"].append(max_error)  # if max_error < 10 else np.inf)
 
-    return pd.DataFrame(df)
+    return pd.DataFrame(df), (len(input_images), len(target_images))
 
 
 def eval_colmap_model(
-    model_path, target_path, thrs=[1, 3, 5], return_df=False, AUC_col="max_error"
+    model_path,
+    target_path,
+    thrs=[1, 3, 5],
+    return_df=False,
+    AUC_col="max_error",
+    verbose=False,
 ):
     """
     Given a scene path, evaluate the model in the given folder versus the ground truth in the target_folder.
@@ -121,25 +131,27 @@ def eval_colmap_model(
         df_AUC: dataframe with the AUC values for the model.
 
     """
+    # read model
+    try:
+        rec_input = pycolmap.Reconstruction(model_path)
+    except Exception as e:
+        print(f"Failed to read input model from {model_path}: {e}")
+        return np.array([np.nan] * len(thrs)), (np.nan, np.nan), None
 
-    if not os.path.exists(model_path):
-        raise Exception(f"Path {model_path} does not exist.")
-
-    if not os.path.exists(target_path):
-        raise Exception(f"Path {target_path} does not exist.")
-
-    # read models
-    rec_input = pycolmap.Reconstruction(model_path)
-    rec_target = pycolmap.Reconstruction(target_path)
+    try:
+        rec_target = pycolmap.Reconstruction(target_path)
+    except Exception as e:
+        print(f"Failed to read target model from {target_path}: {e}")
+        return np.array([np.nan] * len(thrs)), (np.nan, np.nan), None
 
     # evaluate scene (each pair of images) and compute the AUC
-    df = evaluate_scene(rec_target, rec_input)
+    df, num_images = evaluate_scene(rec_target, rec_input, verbose=verbose)
     AUC_score_max = np.array(compute_AUC(df[AUC_col], thrs))
 
     if return_df:
-        return AUC_score_max, df
+        return AUC_score_max, num_images, df
 
-    return AUC_score_max, None
+    return AUC_score_max, num_images, None
 
 
 def eval_colmap_model_all_scenes(
@@ -151,6 +163,7 @@ def eval_colmap_model_all_scenes(
     AUC_col="max_error",
     return_df=False,
     n_jobs=-1,
+    verbose=True,
 ) -> pd.DataFrame:
     """
     Evaluate the model on all the scenes in the data_path using parallel processing.
@@ -166,7 +179,7 @@ def eval_colmap_model_all_scenes(
 
     print(f"Found {len(common_scenes)} common scenes.")
 
-    if len(common_scenes) == 0:
+    if len(common_scenes) == 0 and verbose:
         logger.warning("No common scenes found!")
         return pd.DataFrame()
 
@@ -193,7 +206,12 @@ def eval_colmap_model_all_scenes(
     # Use joblib to parallelize the evaluation of each scene
     parallel_results = Parallel(n_jobs=n_jobs)(
         delayed(eval_colmap_model)(
-            input, target, thrs=thrs, return_df=return_df, AUC_col=AUC_col
+            input,
+            target,
+            thrs=thrs,
+            return_df=return_df,
+            AUC_col=AUC_col,
+            verbose=verbose,
         )
         for input, target in tqdm(
             valid_pairs,
@@ -203,14 +221,18 @@ def eval_colmap_model_all_scenes(
     )
     # Unpack the results
     results = [r[0] for r in parallel_results]
-    dfs = [r[1] for r in parallel_results] if return_df else None
+    num_images = [r[1] for r in parallel_results]
+    reg_images = [r[0] for r in num_images]  # registered images
+    tot_images = [r[1] for r in num_images]  # total images in target
+    dfs = [r[2] for r in parallel_results] if return_df else None
 
     if return_df:
         # Save individual dataframes if needed
         dfs_path = Path(input_path + "_results_dfs")
         dfs_path.mkdir(parents=True, exist_ok=True)
         for scene_name, df in zip(valid_scenes, dfs):
-            df.to_csv(dfs_path / f"results_{scene_name}.csv", index=False)
+            if df is not None:
+                df.to_csv(dfs_path / f"results_{scene_name}.csv", index=False)
         print(f"Saved individual result dataframes to {dfs_path}")
     # Process results and create the DataFrame
     res = {}
@@ -220,12 +242,27 @@ def eval_colmap_model_all_scenes(
 
     # Creating the DataFrame and transposing it to have the scenes as rows
     df_res_colmap = pd.DataFrame(res, index=thrs).transpose()
+
     # sort by scene name
+    df_res_colmap["reg_images"] = reg_images
+    df_res_colmap["tot_images"] = tot_images
     df_res_colmap = df_res_colmap.sort_index()
 
-    # Rename the columns as {model}@{thrs}
-    df_res_colmap.columns = [f"auc@{thr}" for thr in thrs]
-    return df_res_colmap.round(2)
+    # Rename the columns as {model}@{thrs} - but keep num_images as is
+    df_res_colmap.columns = [f"auc@{thr}" for thr in thrs] + [
+        "reg_images",
+        "tot_images",
+    ]
+    df_res_colmap = df_res_colmap[
+        ["reg_images", "tot_images"] + [f"auc@{thr}" for thr in thrs]
+    ]
+
+    # add mean all cols but num_images
+    df_res_colmap.loc["mean"] = df_res_colmap.mean(numeric_only=True)
+
+    df_res_colmap = df_res_colmap.round(2)
+
+    return df_res_colmap
 
 
 if __name__ == "__main__":

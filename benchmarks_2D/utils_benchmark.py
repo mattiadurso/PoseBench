@@ -22,9 +22,10 @@ def parse_poses(poses_file, benchmark_name):
     """Parse poses from a given file based on the benchmark format."""
     if benchmark_name in [
         "megadepth1500",
-        "graz_high_res",
+        "graz4k",
         "megadepth_view",
         "megadepth_air2ground",
+        "terrasky3d",
     ]:
         return parse_md1500_poses(poses_file)
     elif benchmark_name in ["scannet1500"]:
@@ -121,7 +122,7 @@ def process_pose_estimation(pair_matches_data, th, seed=0):
 
         T1_to_2_est = np.concatenate((R_est, t_est), axis=-1)
         e_t, e_R = compute_pose_error(T1_to_2_est, R, t)
-        e_pose = min(10, max(e_t, e_R))
+        e_pose = min(10.0, max(e_t, e_R))
         num_inliers = np.sum(mask)
 
         results = (img1, img2, e_t, e_R, e_pose, num_inliers)
@@ -196,9 +197,10 @@ def parse_pair(pair, benchmark_name):
     """Parse a line from a .pairs file"""
     if benchmark_name in [
         "megadepth1500",
-        "graz_high_res",
+        "graz4k",
         "megadepth_view",
         "megadepth_air2ground",
+        "terrasky3d",
     ]:
         # Pose is stores as "... flat(R) flat(t)""
         parts = pair.strip().split()
@@ -231,7 +233,10 @@ def print_metrics(wrapper, metrics: dict):
     """Pretty print metrics from a benchmark wrapper"""
     print(f"\nEvaluation results for {wrapper.name}:")
     for k, v in metrics.items():
-        print(f"{k:<8}: {v:.1f}")
+        if k == "total_pairs":
+            print(f"{k:<8}: {v:,}")
+        else:
+            print(f"{k:<8}: {v:.4f}")
 
 
 def get_best_device(verbose=False):

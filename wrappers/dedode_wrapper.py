@@ -20,12 +20,22 @@ from wrappers.wrapper import MethodWrapper, MethodOutput
 
 
 class DeDoDeWrapper(MethodWrapper):
-    def __init__(self, descriptor_G: bool = False, device: str = "cuda:0", border=16):
-        name = "dedode-G" if descriptor_G else "dedode-B"
+    def __init__(
+        self,
+        v2: bool = False,
+        descriptor_G: bool = False,
+        device: str = "cuda:0",
+        border=16,
+    ):
+        name = "dedode" if not v2 else "dedode2"
+        name += "-G" if descriptor_G else "-B"
         super().__init__(name=name, border=border, device=device)
 
         # Load weights
-        detector_path = method_path / "weights/dedode_detector_L.pth"
+        if v2:
+            detector_path = method_path / "weights/dedode_detector_L_v2.pth"
+        else:
+            detector_path = method_path / "weights/dedode_detector_L.pth"
         descriptor_G_path = method_path / "weights/dedode_descriptor_G.pth"
         descriptor_B_path = method_path / "weights/dedode_descriptor_B.pth"
 

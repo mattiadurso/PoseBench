@@ -22,7 +22,7 @@ import argparse
 import numpy as np
 from datetime import datetime
 from functools import partial
-from joblib import Parallel, delayed, parallel_backend
+from joblib import Parallel, delayed
 
 from matchers.mnn import MNN
 from benchmarks_2D.utils_benchmark import (
@@ -54,7 +54,7 @@ class Benchmark:
     def __init__(
         self,
         benchmark_name: str,
-        dataset_path=abs_root / "benchmarks/megadepth1500/data",
+        dataset_path=abs_root / "benchmarks_2D/megadepth1500/data",
         ransac_th: float = 1,
         min_score: float = 0.5,
         ratio_test: float = 1,
@@ -83,15 +83,15 @@ class Benchmark:
         self.feature_path = feature_path
         if scaling_factor != 1 and compute_repeatability:
             logger.warning(
-                "Repeatability computation might be incorrect when \
-                scaling_factor != 1. Thus, it is disabled."
+                "Repeatability computation might be incorrect when "
+                + "scaling_factor != 1. Thus, it is disabled."
             )
         self.compute_repeatability = (
             compute_repeatability
             and benchmark_name
             in [
                 "megadepth1500",
-                "graz_high_res",
+                "graz4k",
             ]
             and scaling_factor == 1
         )  # repeatability only for MegaDepth and GHR
@@ -104,7 +104,15 @@ class Benchmark:
         # Load pairs and paths
         self.dataset_path = abs_root / self.dataset_path
         with open(self.dataset_path / "pairs_calibrated.txt", "r") as f:
-            self.pairs_calibrated = f.read().splitlines()  # limit for quick testing
+            self.pairs_calibrated = f.read().splitlines()
+
+        # skip header starting with #
+        self.pairs_calibrated = [p for p in self.pairs_calibrated if p and p[0] != "#"]
+        logger.info(
+            f"Loaded {len(self.pairs_calibrated):,} calibrated pairs from {self.dataset_path/'pairs_calibrated.txt'}"
+        )
+
+        # self.pairs_calibrated = self.pairs_calibrated[:100]  # for quick testing
 
         if self.ghr_partial:
             scene = "graz_main_square"  # small scene for quick testing
@@ -125,9 +133,14 @@ class Benchmark:
         elif benchmark_name.lower() == "scannet1500":
             self.images_path = self.dataset_path
 
-        elif benchmark_name.lower() == "graz_high_res":
+        elif benchmark_name.lower() == "graz4k":
             self.images_path = self.dataset_path
             self.depths_path = self.dataset_path
+            self.views_path = self.dataset_path / "views.txt"
+            self.views_dict = parse_poses(self.views_path, self.benchmark_name)
+
+        elif benchmark_name.lower() == "terrasky3d":
+            self.images_path = self.dataset_path
             self.views_path = self.dataset_path / "views.txt"
             self.views_dict = parse_poses(self.views_path, self.benchmark_name)
 
@@ -191,7 +204,7 @@ class Benchmark:
                     # load depth
                     if self.benchmark_name == "megadepth1500":
                         Z_path = self.depths_path / f"{img_name.split('.')[0]}.h5"
-                    elif self.benchmark_name == "graz_high_res":
+                    elif self.benchmark_name == "graz4k":
                         scene, _, cam, image_name = img_name.split("/")
                         Z_path = (
                             self.depths_path
@@ -230,7 +243,9 @@ class Benchmark:
         """Save extracted features to intermediate directory.
         key: f"{wrapper_name}_kpts_{max_kpts}"
         """
-        intermediate_path = Path(f"benchmarks/{self.benchmark_name}/intermediate") / key
+        intermediate_path = (
+            Path(f"benchmarks_2D/{self.benchmark_name}/intermediate") / key
+        )
         os.makedirs(intermediate_path, exist_ok=True)
 
         keypoints_file = intermediate_path / "keypoints.pt"
@@ -414,6 +429,41 @@ class Benchmark:
 
         return results
 
+    def match_with_matcher(self, wrapper):
+        """Match all pairs using a matcher wrapper (like RoMa or LightGlue)."""
+
+        matches_dict = {}
+
+        for pair in tqdm(self.pairs_calibrated, desc="Matching pairs with matcher"):
+            img1, img2, K1, K2, R, t = parse_pair(
+                pair, benchmark_name=self.benchmark_name
+            )
+
+            # Match
+            matches, kpts1, kpts2 = wrapper._extract(
+                self.images_path / img1,
+                self.images_path / img2,
+                max_kpts=self.max_kpts,
+            )
+
+            # Scale intrinsics if scaling applied
+            if self.scaling_factor != 1:
+                K1[:2, :3] /= self.scaling_factor
+                K2[:2, :3] /= self.scaling_factor
+
+            # Store for pose estimation
+            matches_dict[(img1, img2)] = {
+                "matches": matches,
+                "kpts1": kpts1.cpu().numpy(),
+                "kpts2": kpts2.cpu().numpy(),
+                "K1": K1,
+                "K2": K2,
+                "R": R,
+                "t": t,
+            }
+
+        return matches_dict
+
     @torch.no_grad()
     def benchmark(self, wrapper, save_key=None):
         """Run the complete benchmark."""
@@ -430,14 +480,29 @@ class Benchmark:
         # Phase 1: Batch matching (with feature extraction if needed)
         wrapper.move_to(self.device)  # ensure wrapper is on the correct device
 
-        matches_dict, rep_results = self.batch_match_all_pairs(
-            wrapper, save_key=features_save_key
-        )
+        if wrapper.is_sparse_feature_extractor:
+            matches_dict, rep_results = self.batch_match_all_pairs(
+                wrapper, save_key=features_save_key
+            )
+        else:  # using a matcher like RoMa or LightGlue
+            matches_dict = self.match_with_matcher(wrapper)
 
         wrapper.move_to("cpu")  # to avoid issues in parallel jobs
 
-        # Phase 2: Parallel pose estimation
+        # Phase 2: Parallel pose estimation as
+        # results = (img1, img2, e_t, e_R, e_pose, inliers)
         results = self.batch_pose_estimation(matches_dict)
+        os.makedirs(
+            f"benchmarks_2D/{self.benchmark_name}/results/df_pairs", exist_ok=True
+        )
+        df_pairs_path = (
+            f"benchmarks_2D/{self.benchmark_name}/results/df_pairs/{save_key}.csv"
+        )
+        with open(df_pairs_path, "w") as f:
+            f.write("img1,img2,e_t,e_R,e_pose,inlier\n")
+            for r in results:
+                img1, img2, e_t, e_R, e_pose, inlier = r
+                f.write(f"{img1},{img2},{e_t},{e_R},{e_pose},{inlier}\n")
 
         wrapper.move_to(self.device)  # move back to original device
 
@@ -460,10 +525,10 @@ class Benchmark:
 
         # optional, save images not registered
         os.makedirs(
-            f"benchmarks/{self.benchmark_name}/results/not_registered", exist_ok=True
+            f"benchmarks_2D/{self.benchmark_name}/results/not_registered", exist_ok=True
         )
         with open(
-            f"benchmarks/{self.benchmark_name}/results/not_registered/{save_key}.csv",
+            f"benchmarks_2D/{self.benchmark_name}/results/not_registered/{save_key}.csv",
             "w",
         ) as f:
             f.write("img1,img2,e_t,e_R,e_pose,inlier\n")
@@ -474,8 +539,8 @@ class Benchmark:
 
         out = {
             "inliers": np.mean(inliers),
-            "unregistered_pairs": len(unregistred),
-            "total_pairs": len(results),
+            "unregistered_pairs": int(len(unregistred)),
+            "total_pairs": int(len(results)),
             "auc_5": auc[0],
             "auc_10": auc[1],
             "auc_20": auc[2],
@@ -505,7 +570,7 @@ if __name__ == "__main__":
 
     parser = argparse.ArgumentParser()
     parser.add_argument(
-        "--ds", type=str, default="megadepth1500", help="Dataset (ds) name"
+        "--ds", type=str, default="terrasky3d", help="Dataset (ds) name"
     )
     parser.add_argument("--device", default="cuda", help="Device to use for matching")
     parser.add_argument(
@@ -532,9 +597,9 @@ if __name__ == "__main__":
     parser.add_argument(
         "--max-kpts",
         type=int,
-        choices=[2048, 8000],
+        choices=[2048, 4096, 8000],
         default=2048,
-        help="Maximum keypoints (allowed values: 2048 or 8000)",
+        help="Maximum keypoints (allowed values: 2048, 4096, or 8000)",
     )
     parser.add_argument("--run-tag", type=str, default=None, help="Tag for this run")
     parser.add_argument(
@@ -569,7 +634,7 @@ if __name__ == "__main__":
         help="Use OOM-safe feature extraction (might be slower) when method goes OOM.",
     )
     parser.add_argument(
-        "--sandesc_paper", action="store_true", help="Use SANDesc from the paper."
+        "--sandesc-paper", action="store_true", help="Use SANDesc from the paper."
     )
     args = parser.parse_args()
 
@@ -585,17 +650,20 @@ if __name__ == "__main__":
         benchmark_name = "megadepth_air2ground"
     elif benchmark_name.lower() in ["sc", "scannet", "sc1500", "scannet1500"]:
         benchmark_name = "scannet1500"
-    elif benchmark_name.lower() in ["graz", "ghr", "graz_high_res"]:
-        benchmark_name = "graz_high_res"
+    elif benchmark_name.lower() in ["graz", "g4k", "graz4k"]:
+        benchmark_name = "graz4k"
+    elif benchmark_name.lower() in ["terrasky3d", "ts3d"]:
+        benchmark_name = "terrasky3d"
     else:
         raise ValueError(f"Unknown dataset name: {benchmark_name}")
 
     data_path = (
         args.data_path
         if args.data_path is not None
-        else f"benchmarks/{benchmark_name}/data"
+        else f"benchmarks_2D/{benchmark_name}/data"
     )
     njobs = args.njobs if args.njobs != -1 else os.cpu_count()
+    njobs = 1 if sys.gettrace() else njobs
     ratio_test = args.ratio_test
     min_score = args.min_score
     ransac_th = args.ransac_th
@@ -669,7 +737,7 @@ if __name__ == "__main__":
             logger.info(f"Using custom descriptors from {custom_desc}.")
 
     # matcher params
-    if benchmark_name == "graz_high_res" and ghr_partial:
+    if benchmark_name == "graz4k" and ghr_partial:
         key = f"{wrapper.name} min_score_{min_score}_ratio_test_{ratio_test}_th_{ransac_th}_mnn_scale_{scaling_factor}_partial {max_kpts}"
     else:
         key = f"{wrapper.name} min_score_{min_score}_ratio_test_{ratio_test}_th_{ransac_th}_mnn_scale_{scaling_factor} {max_kpts}"
@@ -681,7 +749,7 @@ if __name__ == "__main__":
     logger.info(f"\n\n>>> Running parallel benchmark for {key}...<<<\n")
 
     # create if not exists
-    results_path = Path(f"benchmarks/{benchmark_name}/results")
+    results_path = Path(f"benchmarks_2D/{benchmark_name}/results")
     os.makedirs(results_path, exist_ok=True)
 
     if not os.path.exists(results_path / "results.json"):

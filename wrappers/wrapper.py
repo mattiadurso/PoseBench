@@ -87,7 +87,7 @@ class MethodWrapper(ABC):
         self.device = device
         self.custom_descriptor = None
         self.matcher = None
-
+        self.is_sparse_feature_extractor = True
         # amp
         self.use_amp = use_amp
         if self.use_amp:

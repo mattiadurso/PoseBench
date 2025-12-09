@@ -21,14 +21,9 @@ def wrappers_manager(name, device="cpu"):
     print(f"Creating wrapper for {name} on device {device}.\n")
 
     if name == "disk" or name == "disk-kornia":
-        if name == "disk":
-            from wrappers.disk_wrapper import DiskWrapper
+        from wrappers.disk_wrapper import DiskWrapperKornia
 
-            wrapper = DiskWrapper(device=device)
-        else:
-            from wrappers.disk_wrapper import DiskWrapperKornia
-
-            wrapper = DiskWrapperKornia(device=device)  # use kornia version
+        wrapper = DiskWrapperKornia(device=device)  # use kornia version
         wrapper.name = name
 
     elif name == "superpoint":
@@ -43,16 +38,12 @@ def wrappers_manager(name, device="cpu"):
         wrapper = RIPEWrapper(device=device)
         wrapper.name = name
 
-    elif name == "dedode" or name == "dedode-B":
+    elif "dedode" in name:
         from wrappers.dedode_wrapper import DeDoDeWrapper
 
-        wrapper = DeDoDeWrapper(device=device)
-        wrapper.name = name
-
-    elif name == "dedode-G":
-        from wrappers.dedode_wrapper import DeDoDeWrapper
-
-        wrapper = DeDoDeWrapper(device=device, descriptor_G=True)
+        wrapper = DeDoDeWrapper(
+            device=device, v2="2" in name, descriptor_G="-G" in name
+        )
         wrapper.name = name
 
     elif name == "aliked":
@@ -71,6 +62,26 @@ def wrappers_manager(name, device="cpu"):
         from wrappers.rdd_wrapper import RDDWrapper
 
         wrapper = RDDWrapper(device=device)
+        wrapper.name = name
+
+    elif name == "roma":
+        from wrappers.roma_wrapper import RoMaWrapper
+
+        wrapper = RoMaWrapper(device=device)
+        wrapper.name = name
+
+    elif "lightglue" in name:
+        """call as detector+lightglue, e.g., superpoint+lightglue"""
+        from wrappers.lightglue_wrapper import LightGlueWrapper
+
+        detector_name = name.split("+")[0]
+        wrapper = LightGlueWrapper(detector_name=detector_name, device=device)
+        wrapper.name = name
+
+    elif name == "loftr":
+        from wrappers.loftr_wrapper import LoFTRWrapper
+
+        wrapper = LoFTRWrapper(device=device)
         wrapper.name = name
 
     else:
