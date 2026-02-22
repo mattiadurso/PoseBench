@@ -2,7 +2,7 @@ import sys
 import torch
 
 # Add method-specific path before importing from it
-sys.path.append("methods/aliked")
+sys.path.append("/home/mattia/Desktop/Repos/posebench/methods/aliked")
 
 from methods.aliked.nets.aliked import ALIKED
 from wrappers.wrapper import MethodWrapper, MethodOutput

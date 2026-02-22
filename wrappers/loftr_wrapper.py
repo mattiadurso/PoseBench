@@ -24,7 +24,7 @@ class LoFTRWrapper(MethodWrapper):
         device: str = "cuda:0",
         border=16,
     ):
-        name = "roma"
+        name = "loftr"
         super().__init__(name=name, border=border, device=device)
         self.is_sparse_feature_extractor = False
 
@@ -58,7 +58,7 @@ class LoFTRWrapper(MethodWrapper):
             mkpts0 = mkpts0[indices]
             mkpts1 = mkpts1[indices]
 
-        return torch.arange(mkpts0.shape[0]).repeat(2, 1).T, mkpts0, mkpts1
+        return torch.arange(mkpts0.shape[0]).repeat(2, 1).T, mkpts0 + 0.5, mkpts1 + 0.5
 
     def to_grayscale(self, img):
         """Convert image to grayscale if needed."""

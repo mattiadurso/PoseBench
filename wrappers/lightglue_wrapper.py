@@ -33,35 +33,34 @@ class LightGlueWrapper(MethodWrapper):
 
         self.detector_name = detector_name
         self.detector = None
-        self.model = LightGlue(features=detector_name).eval().cuda()  # load the matcher
+        self.max_kpts = None
+        self.model = (
+            LightGlue(features=detector_name).eval().to(device)
+        )  # load the matcher
 
     def init_extractor(self, max_kpts=2048):
         "Initialize the extractor based on the selected detector"
+        self.max_kpts = max_kpts
         # Load weights
         if self.detector_name == "superpoint":
             self.detector = (
-                SuperPoint(max_num_keypoints=max_kpts).eval().cuda()
-            )  # load the extractor
+                SuperPoint(max_num_keypoints=max_kpts).eval().to(self.device)
+            )
         elif self.detector_name == "disk":
-            self.detector = (
-                DISK(max_num_keypoints=max_kpts).eval().cuda()
-            )  # load the extractor
+            self.detector = DISK(max_num_keypoints=max_kpts).eval().to(self.device)
         elif self.detector_name == "sift":
-            self.detector = (
-                SIFT(max_num_keypoints=max_kpts).eval().cuda()
-            )  # load the extractor
+            self.detector = SIFT(max_num_keypoints=max_kpts).eval().to(self.device)
         elif self.detector_name == "aliked":
-            self.detector = (
-                ALIKED(max_num_keypoints=max_kpts).eval().cuda()
-            )  # load the extractor
+            self.detector = ALIKED(max_num_keypoints=max_kpts).eval().to(self.device)
 
     def _extract(self, img1_path, img2_path, max_kpts=4096):
         """Extract keypoints and descriptors from an image."""
-        if self.detector is None:
+        if self.detector is None or self.max_kpts != max_kpts:
             self.init_extractor(max_kpts)
 
         img1 = load_image(img1_path).to(self.device)
         img2 = load_image(img2_path).to(self.device)
+
         # extract local features
         feats1 = self.detector.extract(
             img1
@@ -81,7 +80,11 @@ class LightGlueWrapper(MethodWrapper):
             matches[..., 1]
         ]  # coordinates in image #1, shape (K,2)
 
-        return torch.arange(points1.shape[0]).repeat(2, 1).T, points1, points2
+        return (
+            torch.arange(points1.shape[0]).repeat(2, 1).T,
+            points1 + 0.5,
+            points2 + 0.5,
+        )
 
     def move_to(self, device="cpu"):
         """Move the model to the specified device."""

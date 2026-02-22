@@ -33,4 +33,4 @@ class RIPEWrapper(MethodWrapper):
                 des_vol = self.custom_descriptor(x)
                 des = self.grid_sample_nan(kpts[None], des_vol, mode="nearest")[0][0].T
 
-        return MethodOutput(kpts=kpts, kpts_scores=scores, des=des)
+        return MethodOutput(kpts=kpts + 0.5, kpts_scores=scores, des=des)

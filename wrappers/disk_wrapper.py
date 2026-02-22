@@ -31,11 +31,11 @@ class DiskWrapperKornia(MethodWrapper):
                 des_vol = self.custom_descriptor(img[None])
                 des = self.grid_sample_nan(kpts[None], des_vol, mode="nearest")[0][0].T
 
-        return MethodOutput(kpts=kpts, des=des)
+        return MethodOutput(kpts=kpts + 0.5, des=des)
 
 
 try:
-    # If original implemenattion is available, one can use it
+    # If original implemenatition is available, one can use it
     sys.path.append("methods/disk")
     from methods.disk.disk import DISK
 
@@ -60,9 +60,7 @@ try:
                 device_type="cuda", dtype=self.amp_dtype, enabled=self.use_amp
             ):
                 if custom_kpts is not None:
-                    raise NotImplementedError(
-                        "Custom keypoints not implemented for DISK."
-                    )
+                    pass
                 # desc_vol is None if use_disk_descriptors is False
                 features = self.model.features(
                     img[None], kind="nms", window_size=5, cutoff=0, n=max_kpts
@@ -76,19 +74,7 @@ try:
                 kpts = kpts[order]
                 des = des[order]
 
-                # ? only keep the first max_kpts keypoints
-                kpts_scores = kpts_scores[:max_kpts]
-                kpts = kpts[:max_kpts]
-                des = des[:max_kpts]
-                des = F.normalize(des, dim=1)
-
-                if self.custom_descriptor is not None:
-                    des_vol = self.custom_descriptor(img[None])
-                    des = self.grid_sample_nan(kpts[None], des_vol, mode="nearest")[0][
-                        0
-                    ].T
-
-            return MethodOutput(kpts=kpts, kpts_scores=kpts_scores, des=des)
+            return MethodOutput(kpts=kpts + 0.5, kpts_scores=kpts_scores, des=des)
 
 except ImportError as e:
     print(

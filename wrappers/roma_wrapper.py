@@ -49,4 +49,4 @@ class RoMaWrapper(MethodWrapper):
             kptsA = kptsA[indices]
             kptsB = kptsB[indices]
 
-        return torch.arange(kptsA.shape[0]).repeat(2, 1).T, kptsA, kptsB
+        return torch.arange(kptsA.shape[0]).repeat(2, 1).T, kptsA + 0.5, kptsB + 0.5
