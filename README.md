@@ -7,7 +7,7 @@ Currently it's possible to run a model/wrapper on **8** different benchmarks.
 
 SANDesc is supported but not released yet; thus, those parts might be commented or never used.
 
-⚠️⚠️⚠️  To download GRAZ 4K ⚠️⚠️⚠️  
+⚠️⚠️⚠️ To download GRAZ 4K ⚠️⚠️⚠️  
 ```bash
 bash bash/download_graz4k.sh
 ```
@@ -193,6 +193,7 @@ That’s it, you’re ready to benchmark.
 * [ ] IMC
     - Add multiview support, now only stereo
 * [ ] Enable partial pose estimation with images in input scene (due to subsample).
+* [ ] Fix resolution handling in matchers, now working obly with scale_factor=1
 
 
 
