@@ -1,6 +1,6 @@
 import sys
 
-sys.path.append("/home/mattia/Desktop/Repos/wrapper_factory")
+sys.path.append("/home/mattia/Desktop/Repos/posebench")
 
 from pathlib import Path
 
@@ -82,6 +82,12 @@ def wrappers_manager(name, device="cpu"):
         from wrappers.loftr_wrapper import LoFTRWrapper
 
         wrapper = LoFTRWrapper(device=device)
+        wrapper.name = name
+
+    elif name == "mast3r":
+        from wrappers.mast3r_wrapper import MAST3RWrapper
+
+        wrapper = MAST3RWrapper(device=device)
         wrapper.name = name
 
     else:

@@ -633,9 +633,7 @@ if __name__ == "__main__":
         action="store_true",
         help="Use OOM-safe feature extraction (might be slower) when method goes OOM.",
     )
-    parser.add_argument(
-        "--sandesc-paper", action="store_true", help="Use SANDesc from the paper."
-    )
+
     args = parser.parse_args()
 
     device = args.device
@@ -681,60 +679,29 @@ if __name__ == "__main__":
     wrapper = wrappers_manager(name=wrapper_name, device=args.device)
 
     if custom_desc is not None:
-        if args.sandesc_paper:
-            #  Eventually add my descriptors
-            weights = torch.load(custom_desc, weights_only=False)
-            config = weights["config"]["model_config"]
-            model = {
-                "ch_in": config["unet_ch_in"],
-                "kernel_size": config["unet_kernel_size"],
-                "activ": config["unet_activ"],
-                "norm": config["unet_norm"],
-                "skip_connection": config["unet_with_skip_connections"],
-                "spatial_attention": config["unet_spatial_attention"],
-                "third_block": config["third_block"],
-            }
+        #  Eventually add my descriptors
+        weights = torch.load(custom_desc, weights_only=False)
+        config = weights["config"]["model"]
+        model = {
+            "ch_in": config["unet_ch_in"],
+            "kernel_size": config["unet_kernel_size"],
+            "activ": config["unet_activ"],
+            "norm": config["unet_norm"],
+            "skip_connection": config["unet_with_skip_connections"],
+            "spatial_attention": config["unet_spatial_attention"],
+            "third_block": config["third_block"],
+        }
 
-            from sandesc_models.sandesc.network_descriptor import SANDesc
+        from sandesc_models.sandesc.network_descriptor import SANDesc
 
-            network = SANDesc(**model).eval()
+        network = SANDesc(**model).eval()
 
-            weights = torch.load(custom_desc, weights_only=False)
-            network.load_state_dict(weights["state_dict"])
+        weights = torch.load(custom_desc, weights_only=False)
+        network.load_state_dict(weights["state_dict"])
 
-            wrapper.add_custom_descriptor(network)
-            wrapper.name = f"{wrapper.name}+SANDesc"
-            logger.info(f"Using custom descriptors from {custom_desc}.")
-
-        else:
-            import sys
-
-            sandescd_path = "/home/mattia/Desktop/Repos/sandesc"
-            sys.path.append(sandescd_path)
-            from model.network_descriptor import SANDescD
-
-            #  Eventually add my descriptors
-            weights = torch.load(Path(sandescd_path) / custom_desc, weights_only=False)
-            config = weights["config"]["model"]
-            model = {
-                "ch_in": config["unet_ch_in"],
-                "kernel_size": config["unet_kernel_size"],
-                "activ": config["unet_activ"],
-                "norm": config["unet_norm"],
-                "skip_connection": config["unet_with_skip_connections"],
-                "spatial_attention": config["unet_spatial_attention"],
-                "third_block": config["third_block"],
-                "dino_size": config["dino_size"],
-                "dino_layer": config["dino_layer"],
-            }
-
-            network = SANDescD(**model).eval()
-            network.load_state_dict(weights["state_dict"], strict=False)
-            network.load_dino()
-
-            wrapper.add_custom_descriptor(network)
-            wrapper.name = f"{wrapper.name}+SANDescD{config['dino_size']}"
-            logger.info(f"Using custom descriptors from {custom_desc}.")
+        wrapper.add_custom_descriptor(network)
+        wrapper.name = f"{wrapper.name}+SANDesc"
+        logger.info(f"Using custom descriptors from {custom_desc}.")
 
     # matcher params
     if benchmark_name == "graz4k" and ghr_partial:
@@ -786,7 +753,11 @@ if __name__ == "__main__":
     # Run the benchmark
     s = time.time()
     # Create a simpler save key for features (wrapper_name + max_kpts)
-    feature_save_key = f"{wrapper.name}_kpts_{max_kpts}"
+
+    if args.run_tag is not None:
+        feature_save_key = f"{wrapper.name}_{args.run_tag}_kpts_{max_kpts}"
+    else:
+        feature_save_key = f"{wrapper.name}_kpts_{max_kpts}"
     results, timestamp = benchmark.benchmark(wrapper, save_key=feature_save_key)
     print_metrics(wrapper, results)
     print("-------------------------------------------------------------")

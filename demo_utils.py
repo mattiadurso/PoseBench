@@ -222,6 +222,8 @@ def plot_imgs_and_kpts(
     F_gt=None,
     plot_name=None,
     reth=5,
+    text=None,
+    text_font=12,
 ):
     """
     Plot two images side by side with keypoints overlayed and matches if specified.
@@ -377,7 +379,7 @@ def plot_imgs_and_kpts(
                     ],
                     [kpts1_matched_good[i, 1], kpts2_matched_good[i, 1]],
                     c="g",
-                    linewidth=1,
+                    linewidth=3,
                     alpha=0.85,
                 )
 
@@ -389,7 +391,7 @@ def plot_imgs_and_kpts(
                     ],
                     [kpts1_matched_bad[i, 1], kpts2_matched_bad[i, 1]],
                     c="r",
-                    linewidth=1,
+                    linewidth=3,
                     alpha=0.85,
                 )
 
@@ -403,6 +405,17 @@ def plot_imgs_and_kpts(
                     alpha=0.75,
                 )
 
+    if text is not None:
+        # plot text just above the image, align text to the top left corner
+        plt.text(
+            0.5,
+            1.01,
+            text,
+            transform=plt.gca().transAxes,
+            fontsize=text_font,
+            ha="center",
+            va="bottom",
+        )
     plt.axis("off" if axis else "on")
     # save
     plt.tight_layout()

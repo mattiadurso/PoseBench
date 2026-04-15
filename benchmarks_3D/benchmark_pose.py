@@ -163,6 +163,7 @@ def eval_colmap_model_all_scenes(
     AUC_col="max_error",
     return_df=False,
     n_jobs=-1,
+    round_to=2,
     verbose=True,
 ) -> pd.DataFrame:
     """
@@ -199,7 +200,7 @@ def eval_colmap_model_all_scenes(
             valid_pairs.append((inp, tgt))
             valid_scenes.append(scene)
         else:
-            logger.warning(f"Skipping {scene}: paths don't exist")
+            logger.warning(f"Skipping {scene}: paths don't exist at {inp} and {tgt}")
 
     print(f"Evaluating {len(valid_pairs)} valid scenes.")
 
@@ -260,7 +261,7 @@ def eval_colmap_model_all_scenes(
     # add mean all cols but num_images
     df_res_colmap.loc["mean"] = df_res_colmap.mean(numeric_only=True)
 
-    df_res_colmap = df_res_colmap.round(2)
+    df_res_colmap = df_res_colmap.round(round_to)
 
     return df_res_colmap
 

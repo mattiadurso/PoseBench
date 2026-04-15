@@ -236,7 +236,7 @@ def print_metrics(wrapper, metrics: dict):
         if k == "total_pairs":
             print(f"{k:<8}: {v:,}")
         else:
-            print(f"{k:<8}: {v:.4f}")
+            print(f"{k:<8}: {v:.1f}")
 
 
 def get_best_device(verbose=False):
