@@ -1,34 +1,32 @@
 # PoseBench
 
-PoseBench is a lightweight suite of local wrappers for feature detection and description. It downloads third-party implementations and implements a unified interface, allowing users to test and compare methods quickly. Exact results might slightly change according to different library versions, hardware, different num
-ber of jobs, or other unknown factors.
+PoseBench is a lightweight, unified evaluation suite for local feature detection, description, and matching. By providing a standardized interface for third-party implementations, PoseBench allows researchers and developers to quickly test, compare, and benchmark various methods under reproducible conditions.
 
-Currently it's possible to run a model/wrapper on **8** different benchmarks.
+*Note: Exact numerical results may slightly vary depending on library versions, hardware configurations, and parallelization overhead.*
 
-SANDesc is supported but not released yet; thus, those parts might be commented or never used.
+Currently, PoseBench supports executing wrappers across **8** different benchmarks.
 
-⚠️⚠️⚠️ To download GRAZ 4K ⚠️⚠️⚠️  
+> **🎉 Update:** SANDesc has been released! Check it out here: [SANDesc](https://github.com/mattiadurso/SANDesc)
+
+*🚨 Note: This repository is under development.*
+
+---
+
+## 🚀 Quick Start
+
+### 1. Environment Setup
+
+Set up the environment using Conda. The codebase has been tested with the following library versions, though other recent versions may also be compatible.
+
 ```bash
-bash bash/download_graz4k.sh
-```
-
-Repo still under development 🚨
-
-## Quick Start
-
-### 1) Create the Environment
-
-Set up the environment as follows. Other library versions might work as well, I tested the code with these.
-```bash
-# Create conda environment
+# Create and activate the conda environment
 conda create -n keypoint_factory python=3.10.16
-conda activate keypoint_factory                  # Or . ./activate_env.sh if you are lazy
+conda activate posebench  # Or use: source activate_env.sh
 
-# Install PyTorch with CUDA support (tested with CUDA 12.4)
-pip install \
-  torch==2.6.0+cu124 \
-  --index-url https://download.pytorch.org/whl/cu124
+# Install PyTorch with CUDA support (Tested with CUDA 12.4)
+pip install torch==2.6.0+cu124 --index-url [https://download.pytorch.org/whl/cu124](https://download.pytorch.org/whl/cu124)
 
+# Install core dependencies
 pip install \
   h5py==3.13.0 \
   joblib==1.4.2 \
@@ -36,19 +34,16 @@ pip install \
   opencv-python==4.11.0.86 \
   pandas==2.2.3 
 
-# for benchmark_3D
-pip install \
-  pycolmap==3.11
-  
+# Install dependencies for 3D benchmarking
+pip install pycolmap==3.11
+````
 
-## Suggested but optional. 
-# kornia: need for "disk-kornia" method. If not installed you need to provide/download at least one method in methods/ to run any benchmark
-# matplotlib: used for demo and plotting validation results in read_results.ipynb
-# nvidia-ml-py: to measure VRAM usage in speed and memory benchmark
-# PIL: used in some visualizations, but not strictly needed for benchmarking
-# pydegensac: enables better geometric estimation in our imc and hpatches implmentations. Might lead to higher performance
-# tqdm: used to nicely display loops bars progression
-# xformers: to increase speed when using transformer-based models (e.g., DeDoDe, RDD)
+#### Optional (but Recommended) Dependencies
+
+Depending on your specific use cases (e.g., running specific matchers, visualizations, or specific benchmarks), you may need the following:
+
+```bash
+# Common benchmark and visualization tools
 pip install \
   kornia==0.8.0 \
   matplotlib==3.10.1 \
@@ -58,147 +53,120 @@ pip install \
   tqdm==4.67.1 \
   xformers==0.0.29.post2 
 
-# To run IMC, these are also needed
+# Additional requirements for the IMC Benchmark
 pip install \
   jsmin \
-  matplotlib \
-  pydegensac \
   schema \
   scipy \
-  shortuuid \
-  tqdm
-  
+  shortuuid
 ```
-Other dependencies might be related to third party specific methods. 
 
-### 2) Download Methods and Data
+*Note: Certain third-party methods may require additional, specific dependencies. Refer to their respective wrappers.*
 
-Edit `download_wrappers.py` to choose which feature extractor to download. An empty list means all methods listed in `download_wrappers.yaml`. Then, to download __all__ benchmark data and/or code, run the following:
+### 2\. Download Methods and Data
+
+To specify which feature extractors to download, edit `download_wrappers.py`. Leaving the list empty will download all methods defined in `download_wrappers.yaml`.
+
+To download **all** benchmarks, datasets, and wrappers, run:
 
 ```bash
-python download_wrappers.py && \
+python download_wrappers.py
 bash bash/download_all.sh
 ```
-To download only one benchmark, use the corresponding bash file in ```bash/```. The deafult wrapper is `disk-kornia`, which is already available when installing Kornia, and can be used to test if everything works. To downalod only one dataset check ```bash/```.
 
-### 3) Test in the Notebook
-In `demo.ipynb`, it is possible to test the wrappers on images from the Graz High-Resolution Benchmark, visualizing keypoints/matches and sanity-checking that everything works.
+**Dataset-Specific Downloads:**
+To download only a specific benchmark dataset, execute its corresponding bash script in the `bash/` directory. For example, to download the Graz4K dataset:
 
-## Methods
+```bash
+bash bash/download_graz4k.sh
+```
 
-Currently, the following methods are supported with a wrapper:
-### Sparse Methods
+*Tip: The default wrapper is `disk-kornia` (available automatically if Kornia is installed), which is excellent for verifying that your setup is working correctly.*
 
-#### **SIFT**
-- **[Paper](https://en.wikipedia.org/wiki/Scale-invariant_feature_transform)**: David Lowe — *Distinctive Image Features from Scale-Invariant Keypoints*
-- **[Implementation](https://github.com/colmap/pycolmap)**: PyCOLMAP (provides bindings for extracting/matching SIFT features via Python; supports CPU by default (quite slow), optional CUDA).
+### 3\. Testing via Notebook
 
-#### **SuperPoint**
-- **[Paper](https://arxiv.org/abs/1712.07629)**: Daniel DeTone et al.— *SuperPoint: Self-Supervised Interest Point Detection and Description* (CVPR 2018 workshop; arXiv 2017)
-- **[Implementation](https://github.com/magicleap/SuperGluePretrainedNetwork/blob/master/models/)**: From the SuperGlue GitHub repository.
+You can use `demo.ipynb` to test the wrappers on images from the Graz4K Benchmark. This notebook provides visualizations for keypoints and matches, serving as a quick sanity check to ensure your environment and wrappers are functioning properly.
 
-#### **DISK**
-- **[Paper](https://arxiv.org/abs/2006.13566)**: Michał J. Tyszkiewicz et al. — *DISK: Learning Local Features with Policy Gradient* (NeurIPS 2020)
-- **[Implementation](https://github.com/kornia/kornia)**: Using Kornia library.
+-----
 
-#### **RIPE**
-- **[Paper](https://arxiv.org/abs/2507.04839)**: Fraunhofer HHI team — *RIPE: Reinforcement Learning on Unlabeled Image Pairs* (ICCV 2025)
-- **[Implementation](https://github.com/fraunhoferhhi/RIPE)**: Fraunhofer HHI GitHub repository.
+## 🛠️ Supported Methods
 
-#### **DeDoDe**
-- **[Paper](https://arxiv.org/abs/2308.08479)**: Johan Edstedt et el. — *DeDoDe: Detect, Don’t Describe — Describe, Don’t Detect for Local Feature Matching* (arXiv 2023)
-- **[Implementation](https://github.com/Parskatt/DeDoDe)**: Parskatt’s GitHub repository with code, training scripts, and pretrained weights.
-- **Note:** Both -B and -G descriptor models proposed in the paper are available. Repeatability results might slightly change since -G expects images to have edges multiple of 14.
+PoseBench currently provides wrappers for the following methods.
 
-#### **ALIKED**
-- **[Paper](https://arxiv.org/abs/2304.03608)**: Xiaoming Zhao et al. — *ALIKED: A Lighter Keypoint and Descriptor Extraction Network via Deformable Transformation* (2023)
-- **[Implementation](https://github.com/Shiaoming/ALIKED)**: Shiaoming’s GitHub repo for the Python version.
+### Sparse Extractors
 
-### Deep Matchers 
-Notice: these methods are supported only for Graz4K, MegaDepth-1500, MegaDepth-View, Megadepth Air-to-Ground, ScanNet-1500 benchmarks.
+  * **SIFT** ([Paper](https://en.wikipedia.org/wiki/Scale-invariant_feature_transform) | [Implementation](https://github.com/colmap/pycolmap)): Leverages PyCOLMAP bindings. CPU by default; CUDA supported optionally.
+  * **SuperPoint** ([Paper](https://arxiv.org/abs/1712.07629) | [Implementation](https://github.com/magicleap/SuperGluePretrainedNetwork/blob/master/models/)): Deep feature extractor from MagicLeap.
+  * **DISK** ([Paper](https://arxiv.org/abs/2006.13566) | [Implementation](https://github.com/kornia/kornia)): Policy-gradient learned features, powered by Kornia.
+  * **RIPE** ([Paper](https://arxiv.org/abs/2507.04839) | [Implementation](https://github.com/fraunhoferhhi/RIPE)): Reinforcement learning approach by Fraunhofer HHI.
+  * **DeDoDe** ([Paper](https://arxiv.org/abs/2308.08479) | [Implementation](https://github.com/Parskatt/DeDoDe)): Both `-B` and `-G` descriptor models are supported. *(Note: `-G` requires image dimensions to be multiples of 14).*
+  * **ALIKED** ([Paper](https://arxiv.org/abs/2304.03608) | [Implementation](https://github.com/Shiaoming/ALIKED)): Deformable transformation-based lightweight keypoints.
 
-#### **LoFTR**
-- **[Paper](https://arxiv.org/abs/2104.00680)**: Jiaming Sun et al. — *LoFTR: Detector-Free Local Feature Matching with Transformers* (CVPR 2021)
-- **[Implementation](https://github.com/kornia/kornia)**: Using Kornia library.
+### Deep Matchers
 
-#### **LightGlue**
-- **[Paper](https://arxiv.org/abs/2306.13643)**: Philipp Lindenberger et al. — *LightGlue: Local Feature Matching at Light Speed* (ICCV 2023)
-- **[Implementation](https://github.com/kornia/kornia)**: Using Kornia library.
+*Note: Deep matchers are currently supported for Graz4K, MegaDepth-1500, MegaDepth-View, Megadepth Air-to-Ground, and ScanNet-1500 benchmarks.*
 
-#### **RoMa**
-- **[Paper](https://arxiv.org/abs/2305.15404)**: Johan Edstedt et al. — *RoMa: Robust Dense Feature Matching* (CVPR 2024)
-- **[Implementation](https://github.com/Parskatt/RoMa)**: Using official implementation.
+  * **LoFTR** ([Paper](https://arxiv.org/abs/2104.00680) | [Implementation](https://github.com/kornia/kornia)): Detector-free matching with Transformers.
+  * **LightGlue** ([Paper](https://arxiv.org/abs/2306.13643) | [Implementation](https://github.com/kornia/kornia)): Fast, adaptive local feature matching.
+  * **RoMa** ([Paper](https://arxiv.org/abs/2305.15404) | [Implementation](https://github.com/Parskatt/RoMa)): Robust dense feature matching.
 
-## Supported Benchmarks
+-----
 
-After downloading the target methods and verifying that the wrapper exists and runs correctly, the following benchmarks are supported:
+## 📊 Supported Benchmarks
 
-### Benchmarks_2D: 
+Once your methods are downloaded and verified, PoseBench allows you to evaluate them across the following tasks:
 
-- Graz4K
-- MegaDepth-1500
-- MegaDepth-View 
-- Megadepth Air-to-Ground
-- ScanNet-1500
-- HPatches
-- Image Matching Challenge (Phototourism)
-- Speed and Memory
+### 2D Benchmarks
 
-Go to [benchmarks_2D/README.md](benchmarks_2D/README.md) for more details on each of them.
+For detailed information, see [benchmarks\_2D/README.md](https://www.google.com/search?q=benchmarks_2D/README.md).
 
-### Benchmarks_3D:
+  - Graz4K
+  - MegaDepth-1500
+  - MegaDepth-View
+  - Megadepth Air-to-Ground
+  - ScanNet-1500
+  - HPatches
+  - Image Matching Challenge (Phototourism)
+  - Speed and Memory Profiling
 
-- Scene Poses Estimation 
+### 3D Benchmarks
 
-Go to [benchmarks_3D/README.md](benchmarks_3D/README.md) for more details on each of them.
+For detailed information, see [benchmarks\_3D/README.md](https://www.google.com/search?q=benchmarks_3D/README.md).
 
-### Why This Repo?
+  - Scene Pose Estimation
 
-I couldn’t find a single, unified, and reproducible way to **benchmark feature extractors and poses** quickly. Setting up fair benchmarks shouldn’t steal time from research—so this repo aims to make it fast and consistent.
+-----
 
-### Core Idea
+## 💡 Architecture & Philosophy
 
-Wrap each method with a **thin adapter** that standardizes I/O between the model and the benchmark:
+### Why PoseBench?
 
-* The **wrapper** handles everything the model needs for input:
-  normalization, resizing/cropping/padding, color space conversion, etc.
-* It produces a **standard output format**, so benchmarks can treat all methods uniformly.
-* This makes swapping methods trivial—change a single argument instead of rewriting code.
+Setting up fair and reproducible benchmarks for feature extraction and matching is historically time-consuming. PoseBench removes the engineering overhead from your research workflow by providing a fast, consistent, and standardized evaluation suite.
 
-#### How to Add Your Method
+### Core Architecture
 
-1. **Place your implementation** in `methods/`
-2. **Write its wrapper** in `wrappers/`
+PoseBench relies on a **thin adapter pattern**. It wraps each method to standardize Input/Output operations between the underlying model and the benchmark suite:
 
-   * Do all preprocessing here
-   * Return outputs in the repo’s standard format (see other wrappers)
-3. **Register it** in `wrappers_manager.py`
+  * **Preprocessing:** The wrapper handles normalizations, resizing, cropping, padding, and color space conversions.
+  * **Standardized Output:** It returns results in a uniform format, allowing benchmarking scripts to treat all methods agnostically.
+  * **Swappability:** Changing the evaluated model requires changing a single command-line argument rather than rewriting pipeline logic.
 
-That’s it, you’re ready to benchmark.
+### How to Add Your Own Method
 
-### Benefits
+Adding a custom method to PoseBench is straightforward:
 
-* **Reproducible**: consistent I/O and evaluation across methods
-* **Simple to use**: swap methods via a flag
-* **Extensible**: add new models with small, focused wrappers
+1.  **Place your implementation** inside the `methods/` directory.
+2.  **Create a wrapper script** in `wrappers/`. Handle all method-specific preprocessing here and ensure the output matches the standard PoseBench format (refer to existing wrappers as templates).
+3.  **Register your wrapper** inside `wrappers_manager.py`.
 
-
-## TODO 
-
-#### MISC
-* [ ] Reduce dependencies
-    - __pandas__ is used only in Hpatches and read_results, can be eventually put as optional and handled as list of dicts all with same keys
-
-#### Benchmarks
-* [ ] IMC
-    - Add multiview support, now only stereo
-* [ ] Enable partial pose estimation with images in input scene (due to subsample).
-* [ ] Fix resolution handling in matchers, now working obly with scale_factor=1
+You are now ready to benchmark your method against the state-of-the-art.
 
 
 
-## License and Attribution
+## 📜 License and Attribution
 
-This repo provides wrappers around third-party research code and models. Each downloaded project remains under its original license. Please review and comply with the licenses of the respective upstream authors.
+This repository provides wrapper code to interface with third-party research code and models. **Each downloaded project remains under its original author's license.** By using this tool, you are responsible for reviewing and complying with the licenses of the respective upstream authors.
 
-Part of the repo is based on [Emanuele Santellani](https://scholar.google.com/citations?user=1JwKYK8AAAAJ&hl=en)'s work.
+Parts of this repository's benchmarking logic are based on the work of [Emanuele Santellani](https://scholar.google.com/citations?user=1JwKYK8AAAAJ&hl=en).
+
+
