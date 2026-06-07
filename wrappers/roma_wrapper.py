@@ -1,17 +1,16 @@
 import sys
-import gc
 import warnings
 import torch
 from PIL import Image
-import torch.nn.functional as F
 
 from pathlib import Path
+from typing import Union
 
 method_path = Path(__file__).resolve().parents[1] / "methods/RoMa"
 sys.path.append(str(method_path))
 
 warnings.filterwarnings("ignore", category=UserWarning)
-from wrappers.wrapper import MethodWrapper, MethodOutput
+from wrappers.wrapper import MethodWrapper, PairMatches
 
 from romatch import roma_outdoor
 
@@ -20,8 +19,8 @@ class RoMaWrapper(MethodWrapper):
     def __init__(
         self,
         device: str = "cuda:0",
-        border=16,
-    ):
+        border: int = 16,
+    ) -> None:
         name = "roma"
         super().__init__(name=name, border=border, device=device)
         self.is_sparse_feature_extractor = False
@@ -29,8 +28,13 @@ class RoMaWrapper(MethodWrapper):
         # Load weights
         self.model = roma_outdoor(device=device)
 
-    def _extract(self, img1_path, img2_path, max_kpts=4096):
-        """Extract keypoints and descriptors from an image."""
+    def match_pair(
+        self,
+        img1_path: Union[str, Path],
+        img2_path: Union[str, Path],
+        max_kpts: int = 4096,
+    ) -> PairMatches:
+        """Match an image pair end-to-end with RoMa."""
         img1 = Image.open(img1_path).convert("RGB")
         img2 = Image.open(img2_path).convert("RGB")
         W1, H1 = img1.size
@@ -49,4 +53,5 @@ class RoMaWrapper(MethodWrapper):
             kptsA = kptsA[indices]
             kptsB = kptsB[indices]
 
-        return torch.arange(kptsA.shape[0]).repeat(2, 1).T, kptsA + 0.5, kptsB + 0.5
+        idx = torch.arange(kptsA.shape[0]).repeat(2, 1).T
+        return PairMatches(idx, kptsA + 0.5, kptsB + 0.5)

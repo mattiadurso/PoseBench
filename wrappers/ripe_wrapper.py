@@ -1,6 +1,7 @@
 import sys
 import torch
 from pathlib import Path
+from typing import Optional
 
 sys.path.append("methods/ripe")
 from methods.ripe.ripe import vgg_hyper
@@ -8,7 +9,7 @@ from wrappers.wrapper import MethodWrapper, MethodOutput
 
 
 class RIPEWrapper(MethodWrapper):
-    def __init__(self, device: str = "cuda", border=16):
+    def __init__(self, device: str = "cuda", border: int = 16) -> None:
         super().__init__(name="ripe", border=border, device=device)
 
         model_path = "methods/ripe/ckpt/ripe_weights.pth"
@@ -16,7 +17,12 @@ class RIPEWrapper(MethodWrapper):
         self.model.eval()
 
     @torch.inference_mode()
-    def _extract(self, x, max_kpts: int = 2048, custom_kpts=None) -> MethodOutput:
+    def _extract(
+        self,
+        x: torch.Tensor,
+        max_kpts: int = 2048,
+        custom_kpts: Optional[torch.Tensor] = None,
+    ) -> MethodOutput:
         x = x if x.dim() == 4 else x[None]
 
         if custom_kpts is not None:

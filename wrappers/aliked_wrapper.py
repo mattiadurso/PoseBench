@@ -1,15 +1,20 @@
 import sys
 import torch
+from pathlib import Path
+from typing import Optional
 
 # Add method-specific path before importing from it
-sys.path.append("/home/mattia/Desktop/Repos/posebench/methods/aliked")
+method_path = Path(__file__).resolve().parents[1] / "methods/aliked"
+sys.path.append(str(method_path))
 
 from methods.aliked.nets.aliked import ALIKED
 from wrappers.wrapper import MethodWrapper, MethodOutput
 
 
 class AlikedWrapper(MethodWrapper):
-    def __init__(self, device: str = "cuda", max_kpts: int = 2048, border=16):
+    def __init__(
+        self, device: str = "cuda", max_kpts: int = 2048, border: int = 16
+    ) -> None:
         super().__init__(name="aliked", border=border, device=device)
         self.max_kpts = max_kpts
 
@@ -24,7 +29,12 @@ class AlikedWrapper(MethodWrapper):
         )
 
     @torch.inference_mode()
-    def _extract(self, x, max_kpts: int = 2048, custom_kpts=None) -> MethodOutput:
+    def _extract(
+        self,
+        x: torch.Tensor,
+        max_kpts: int = 2048,
+        custom_kpts: Optional[torch.Tensor] = None,
+    ) -> MethodOutput:
         """Extract keypoints and descriptors from image
         Args:
             x (Tensor): Input image tensor of shape (C, H, W) or (B, C, H, W)

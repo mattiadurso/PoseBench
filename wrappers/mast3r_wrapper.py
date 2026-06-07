@@ -1,23 +1,21 @@
 import sys
-import gc
 import warnings
-from methods.mast3r.dust3r.dust3r.utils import device
 import torch
 from PIL import Image
-import torch.nn.functional as F
 
 from pathlib import Path
+from typing import Union
 
 method_path = Path(__file__).resolve().parents[1] / "methods/mast3r"
 sys.path.append(str(method_path))
 
 warnings.filterwarnings("ignore", category=UserWarning)
-from wrappers.wrapper import MethodWrapper
+from wrappers.wrapper import MethodWrapper, PairMatches
 
 from mast3r.model import AsymmetricMASt3R
 from mast3r.fast_nn import fast_reciprocal_NNs
 
-import mast3r.utils.path_to_dust3r
+import mast3r.utils.path_to_dust3r  # noqa: F401  (side-effect: adds dust3r to sys.path)
 from dust3r.inference import inference
 from dust3r.utils.image import load_images
 
@@ -26,8 +24,8 @@ class MAST3RWrapper(MethodWrapper):
     def __init__(
         self,
         device: str = "cuda:0",
-        border=16,
-    ):
+        border: int = 16,
+    ) -> None:
         name = "mast3r"
         super().__init__(name=name, border=border, device=device)
         self.is_sparse_feature_extractor = False
@@ -37,8 +35,13 @@ class MAST3RWrapper(MethodWrapper):
             "naver/MASt3R_ViTLarge_BaseDecoder_512_catmlpdpt_metric"
         ).to(device)
 
-    def _extract(self, img1_path, img2_path, max_kpts=4096):
-        """Extract keypoints and descriptors from an image."""
+    def match_pair(
+        self,
+        img1_path: Union[str, Path],
+        img2_path: Union[str, Path],
+        max_kpts: int = 4096,
+    ) -> PairMatches:
+        """Match an image pair end-to-end with MASt3R."""
         images = load_images([str(img1_path), str(img2_path)], size=512, verbose=False)
 
         # Get original image sizes
@@ -84,8 +87,5 @@ class MAST3RWrapper(MethodWrapper):
             matches_im0 = matches_im0[indices]
             matches_im1 = matches_im1[indices]
 
-        return (
-            torch.arange(matches_im0.shape[0]).repeat(2, 1).T,
-            matches_im0,
-            matches_im1,
-        )
+        idx = torch.arange(matches_im0.shape[0]).repeat(2, 1).T
+        return PairMatches(idx, matches_im0, matches_im1)

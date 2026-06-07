@@ -1,8 +1,25 @@
+import importlib
 import sys
-
-sys.path.append("/home/mattia/Desktop/Repos/posebench")
-
 from pathlib import Path
+
+# Ensure the repo root is importable regardless of the current working directory.
+_REPO_ROOT = str(Path(__file__).resolve().parent)
+if _REPO_ROOT not in sys.path:
+    sys.path.insert(0, _REPO_ROOT)
+
+# Exact-name methods: name -> (module, class). Imported lazily so only the chosen
+# method's (potentially heavy) dependencies are loaded.
+_SIMPLE_WRAPPERS = {
+    "superpoint": ("wrappers.superpoint_wrapper", "SuperPointWrapper"),
+    "ripe": ("wrappers.ripe_wrapper", "RIPEWrapper"),
+    "aliked": ("wrappers.aliked_wrapper", "AlikedWrapper"),
+    "sift": ("wrappers.sift_wrapper", "SIFTPyColmapWrapper"),
+    "rdd": ("wrappers.rdd_wrapper", "RDDWrapper"),
+    "strek": ("wrappers.strek_wrapper", "StrekWrapper"),
+    "roma": ("wrappers.roma_wrapper", "RoMaWrapper"),
+    "loftr": ("wrappers.loftr_wrapper", "LoFTRWrapper"),
+    "mast3r": ("wrappers.mast3r_wrapper", "MAST3RWrapper"),
+}
 
 
 def get_wrappers_list():
@@ -17,80 +34,33 @@ def get_wrappers_list():
     return sorted(wrappers)
 
 
-def wrappers_manager(name, device="cpu"):
-    print(f"Creating wrapper for {name} on device {device}.\n")
-
-    if name == "disk" or name == "disk-kornia":
+def _build_wrapper(name, device):
+    """Construct the wrapper instance for ``name`` (without setting ``.name``)."""
+    if name in ("disk", "disk-kornia"):
         from wrappers.disk_wrapper import DiskWrapperKornia
 
-        wrapper = DiskWrapperKornia(device=device)  # use kornia version
-        wrapper.name = name
+        return DiskWrapperKornia(device=device)  # use kornia version
 
-    elif name == "superpoint":
-        from wrappers.superpoint_wrapper import SuperPointWrapper
-
-        wrapper = SuperPointWrapper(device=device)
-        wrapper.name = name
-
-    elif name == "ripe":
-        from wrappers.ripe_wrapper import RIPEWrapper
-
-        wrapper = RIPEWrapper(device=device)
-        wrapper.name = name
-
-    elif "dedode" in name:
+    if "dedode" in name:
         from wrappers.dedode_wrapper import DeDoDeWrapper
 
-        wrapper = DeDoDeWrapper(
-            device=device, v2="2" in name, descriptor_G="-G" in name
-        )
-        wrapper.name = name
+        return DeDoDeWrapper(device=device, v2="2" in name, descriptor_G="-G" in name)
 
-    elif name == "aliked":
-        from wrappers.aliked_wrapper import AlikedWrapper
-
-        wrapper = AlikedWrapper(device=device)
-        wrapper.name = name
-
-    elif name == "sift":
-        from wrappers.sift_wrapper import SIFTPyColmapWrapper
-
-        wrapper = SIFTPyColmapWrapper(device=device)
-        wrapper.name = name
-
-    elif name == "rdd":
-        from wrappers.rdd_wrapper import RDDWrapper
-
-        wrapper = RDDWrapper(device=device)
-        wrapper.name = name
-
-    elif name == "roma":
-        from wrappers.roma_wrapper import RoMaWrapper
-
-        wrapper = RoMaWrapper(device=device)
-        wrapper.name = name
-
-    elif "lightglue" in name:
-        """call as detector+lightglue, e.g., superpoint+lightglue"""
+    if "lightglue" in name:  # call as detector+lightglue, e.g., superpoint+lightglue
         from wrappers.lightglue_wrapper import LightGlueWrapper
 
-        detector_name = name.split("+")[0]
-        wrapper = LightGlueWrapper(detector_name=detector_name, device=device)
-        wrapper.name = name
+        return LightGlueWrapper(detector_name=name.split("+")[0], device=device)
 
-    elif name == "loftr":
-        from wrappers.loftr_wrapper import LoFTRWrapper
+    if name in _SIMPLE_WRAPPERS:
+        module_name, cls_name = _SIMPLE_WRAPPERS[name]
+        cls = getattr(importlib.import_module(module_name), cls_name)
+        return cls(device=device)
 
-        wrapper = LoFTRWrapper(device=device)
-        wrapper.name = name
+    raise ValueError("Wrappers supported: {}".format(get_wrappers_list()))
 
-    elif name == "mast3r":
-        from wrappers.mast3r_wrapper import MAST3RWrapper
 
-        wrapper = MAST3RWrapper(device=device)
-        wrapper.name = name
-
-    else:
-        raise ValueError("Wrappers supported: {}".format(get_wrappers_list()))
-
+def wrappers_manager(name, device="cpu"):
+    print(f"Creating wrapper for {name} on device {device}.\n")
+    wrapper = _build_wrapper(name, device)
+    wrapper.name = name
     return wrapper

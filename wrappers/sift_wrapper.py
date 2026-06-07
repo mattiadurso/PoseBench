@@ -1,3 +1,5 @@
+from typing import Optional
+
 import torch
 import numpy as np
 
@@ -6,7 +8,9 @@ from wrappers.wrapper import MethodWrapper, MethodOutput
 
 
 class SIFTPyColmapWrapper(MethodWrapper):
-    def __init__(self, device: str = "cuda", border=16, sift_opts: dict = None):
+    def __init__(
+        self, device: str = "cuda", border: int = 16, sift_opts: Optional[dict] = None
+    ) -> None:
         """
         device: 'cuda' | 'cpu' | 'auto' (pycolmap Device; CUDA build required for GPU)
         sift_opts: dict of pycolmap.SiftExtractionOptions fields (optional)
@@ -48,7 +52,12 @@ class SIFTPyColmapWrapper(MethodWrapper):
         gray = np.ascontiguousarray(gray.astype(np.uint8))
         return gray
 
-    def _extract(self, x, max_kpts: int = 2048, custom_kpts=None) -> MethodOutput:
+    def _extract(
+        self,
+        x: torch.Tensor,
+        max_kpts: int = 2048,
+        custom_kpts: Optional[torch.Tensor] = None,
+    ) -> MethodOutput:
         """
         x: CHW torch tensor in [0,1] or [0,255] (H,W multiples of 16 OK).
         Returns MethodOutput with:

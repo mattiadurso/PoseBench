@@ -1,13 +1,14 @@
 import sys
 import torch
 import kornia.feature as KF
-import torch.nn.functional as F
+
+from typing import Optional
 
 from wrappers.wrapper import MethodWrapper, MethodOutput
 
 
 class DiskWrapperKornia(MethodWrapper):
-    def __init__(self, device: str = "cuda:0", border=16) -> None:
+    def __init__(self, device: str = "cuda:0", border: int = 16) -> None:
         super().__init__(name="disk", border=border, device=device)
 
         self.model = KF.DISK.from_pretrained("depth").to(device)
@@ -18,9 +19,11 @@ class DiskWrapperKornia(MethodWrapper):
 
     @torch.inference_mode()
     def _extract(
-        self, img: torch.Tensor, max_kpts: int, custom_kpts=None
+        self,
+        img: torch.Tensor,
+        max_kpts: int,
+        custom_kpts: Optional[torch.Tensor] = None,
     ) -> MethodOutput:
-
         with torch.amp.autocast(
             device_type="cuda", dtype=self.amp_dtype, enabled=self.use_amp
         ):
@@ -40,7 +43,7 @@ try:
     from methods.disk.disk import DISK
 
     class DiskWrapper(MethodWrapper):
-        def __init__(self, device: str = "cuda:0", border=16) -> None:
+        def __init__(self, device: str = "cuda:0", border: int = 16) -> None:
             super().__init__(name="disk", border=border, device=device)
             weights_path = "methods/disk/depth-save.pth"
 
@@ -54,7 +57,10 @@ try:
 
         @torch.inference_mode()
         def _extract(
-            self, img: torch.Tensor, max_kpts: int, custom_kpts=None
+            self,
+            img: torch.Tensor,
+            max_kpts: int,
+            custom_kpts: Optional[torch.Tensor] = None,
         ) -> MethodOutput:
             with torch.amp.autocast(
                 device_type="cuda", dtype=self.amp_dtype, enabled=self.use_amp
@@ -76,7 +82,7 @@ try:
 
             return MethodOutput(kpts=kpts + 0.5, kpts_scores=kpts_scores, des=des)
 
-except ImportError as e:
+except ImportError:
     print(
         "Could not import DISK from methods/disk. Download original implementation to enable it."
     )

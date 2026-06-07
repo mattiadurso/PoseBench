@@ -2,9 +2,9 @@ import sys
 import yaml
 import warnings
 import torch
-import torch.nn.functional as F
 
 from pathlib import Path
+from typing import Optional
 
 method_path = Path(__file__).resolve().parents[1] / "methods/rdd"
 sys.path.append(str(method_path))
@@ -16,7 +16,9 @@ from wrappers.wrapper import MethodWrapper, MethodOutput
 
 
 class RDDWrapper(MethodWrapper):
-    def __init__(self, device: str = "cuda:0", border=16, config=None):
+    def __init__(
+        self, device: str = "cuda:0", border: int = 16, config: Optional[dict] = None
+    ) -> None:
         super().__init__(name="rdd", border=border, device=device)
 
         try:
@@ -52,7 +54,12 @@ class RDDWrapper(MethodWrapper):
             raise RuntimeError(f"Failed to initialize RDD model: {e}")
 
     @torch.inference_mode()
-    def _extract(self, x, max_kpts: int = 2048, custom_kpts=None) -> MethodOutput:
+    def _extract(
+        self,
+        x: torch.Tensor,
+        max_kpts: int = 2048,
+        custom_kpts: Optional[torch.Tensor] = None,
+    ) -> MethodOutput:
         if self.config["top_k"] != max_kpts:
             self.config["top_k"] = max_kpts
             self.__init__(device=self.device, border=self.border, config=self.config)

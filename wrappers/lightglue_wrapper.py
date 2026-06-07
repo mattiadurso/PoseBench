@@ -1,14 +1,12 @@
-import sys
-import gc
 import warnings
-import torch
-from PIL import Image
-import torch.nn.functional as F
-
 from pathlib import Path
+from typing import Union
+
+import torch
+
 
 warnings.filterwarnings("ignore", category=UserWarning)
-from wrappers.wrapper import MethodWrapper, MethodOutput
+from wrappers.wrapper import MethodWrapper, PairMatches
 
 from lightglue import LightGlue, SuperPoint, DISK, SIFT, ALIKED
 from lightglue.utils import load_image, rbd
@@ -19,8 +17,8 @@ class LightGlueWrapper(MethodWrapper):
         self,
         detector_name: str = "superpoint",
         device: str = "cuda:0",
-        border=16,
-    ):
+        border: int = 16,
+    ) -> None:
         assert detector_name in [
             "superpoint",
             "disk",
@@ -38,7 +36,7 @@ class LightGlueWrapper(MethodWrapper):
             LightGlue(features=detector_name).eval().to(device)
         )  # load the matcher
 
-    def init_extractor(self, max_kpts=2048):
+    def init_extractor(self, max_kpts: int = 2048) -> None:
         "Initialize the extractor based on the selected detector"
         self.max_kpts = max_kpts
         # Load weights
@@ -53,8 +51,13 @@ class LightGlueWrapper(MethodWrapper):
         elif self.detector_name == "aliked":
             self.detector = ALIKED(max_num_keypoints=max_kpts).eval().to(self.device)
 
-    def _extract(self, img1_path, img2_path, max_kpts=4096):
-        """Extract keypoints and descriptors from an image."""
+    def match_pair(
+        self,
+        img1_path: Union[str, Path],
+        img2_path: Union[str, Path],
+        max_kpts: int = 4096,
+    ) -> PairMatches:
+        """Match an image pair end-to-end with the detector + LightGlue."""
         if self.detector is None or self.max_kpts != max_kpts:
             self.init_extractor(max_kpts)
 
@@ -80,13 +83,10 @@ class LightGlueWrapper(MethodWrapper):
             matches[..., 1]
         ]  # coordinates in image #1, shape (K,2)
 
-        return (
-            torch.arange(points1.shape[0]).repeat(2, 1).T,
-            points1 + 0.5,
-            points2 + 0.5,
-        )
+        idx = torch.arange(points1.shape[0]).repeat(2, 1).T
+        return PairMatches(idx, points1 + 0.5, points2 + 0.5)
 
-    def move_to(self, device="cpu"):
+    def move_to(self, device: str = "cpu") -> "MethodWrapper":
         """Move the model to the specified device."""
         self.device = device
         self.model.to(device)

@@ -1,19 +1,16 @@
 import sys
-import gc
 import warnings
 import torch
-from PIL import Image
-import torch.nn.functional as F
 
 from pathlib import Path
+from typing import Tuple, Union
 
 method_path = Path(__file__).resolve().parents[1] / "methods/RoMa"
 sys.path.append(str(method_path))
-from wrappers.wrapper import MethodWrapper, MethodOutput
+from wrappers.wrapper import MethodWrapper, PairMatches
 
 warnings.filterwarnings("ignore", category=UserWarning)
 
-import cv2
 import kornia as K
 import kornia.feature as KF
 
@@ -22,8 +19,8 @@ class LoFTRWrapper(MethodWrapper):
     def __init__(
         self,
         device: str = "cuda:0",
-        border=16,
-    ):
+        border: int = 16,
+    ) -> None:
         name = "loftr"
         super().__init__(name=name, border=border, device=device)
         self.is_sparse_feature_extractor = False
@@ -31,8 +28,13 @@ class LoFTRWrapper(MethodWrapper):
         # Load weights
         self.model = KF.LoFTR(pretrained="outdoor").to(self.device).eval()
 
-    def _extract(self, img1_path, img2_path, max_kpts=4096):
-        """Extract keypoints and descriptors from an image."""
+    def match_pair(
+        self,
+        img1_path: Union[str, Path],
+        img2_path: Union[str, Path],
+        max_kpts: int = 4096,
+    ) -> PairMatches:
+        """Match an image pair end-to-end with LoFTR."""
         img1 = K.io.load_image(img1_path, K.io.ImageLoadType.RGB32).to(self.device)
         img2 = K.io.load_image(img2_path, K.io.ImageLoadType.RGB32).to(self.device)
 
@@ -58,15 +60,18 @@ class LoFTRWrapper(MethodWrapper):
             mkpts0 = mkpts0[indices]
             mkpts1 = mkpts1[indices]
 
-        return torch.arange(mkpts0.shape[0]).repeat(2, 1).T, mkpts0 + 0.5, mkpts1 + 0.5
+        idx = torch.arange(mkpts0.shape[0]).repeat(2, 1).T
+        return PairMatches(idx, mkpts0 + 0.5, mkpts1 + 0.5)
 
-    def to_grayscale(self, img):
+    def to_grayscale(self, img: torch.Tensor) -> torch.Tensor:
         """Convert image to grayscale if needed."""
         if img.shape[0] == 3:
             img = K.color.rgb_to_grayscale(img)
         return img
 
-    def resize_image(self, image, long_edge_target=600):
+    def resize_image(
+        self, image: torch.Tensor, long_edge_target: int = 600
+    ) -> Tuple[float, torch.Tensor]:
         """Get the shape after border reduction."""
         H, W = image.shape[-2:]
         scale = long_edge_target / max(H, W)

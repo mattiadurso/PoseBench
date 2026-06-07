@@ -5,6 +5,7 @@ import torch
 import torch.nn.functional as F
 
 from pathlib import Path
+from typing import Optional
 
 method_path = Path(__file__).resolve().parents[1] / "methods/dedode"
 sys.path.append(str(method_path))
@@ -25,8 +26,8 @@ class DeDoDeWrapper(MethodWrapper):
         v2: bool = False,
         descriptor_G: bool = False,
         device: str = "cuda:0",
-        border=16,
-    ):
+        border: int = 16,
+    ) -> None:
         name = "dedode" if not v2 else "dedode2"
         name += "-G" if descriptor_G else "-B"
         super().__init__(name=name, border=border, device=device)
@@ -57,7 +58,9 @@ class DeDoDeWrapper(MethodWrapper):
         self.mean = [0.485, 0.456, 0.406]
         self.std = [0.229, 0.224, 0.225]
 
-    def add_custom_descriptor(self, model, grad: bool = False):
+    def add_custom_descriptor(
+        self, model: torch.nn.Module, grad: bool = False
+    ) -> None:
         self.custom_descriptor = model
         if not grad:
             for p in self.custom_descriptor.parameters():
@@ -70,7 +73,12 @@ class DeDoDeWrapper(MethodWrapper):
         torch.cuda.empty_cache()
 
     @torch.inference_mode()
-    def _extract(self, x, max_kpts: int = 2048, custom_kpts=None) -> MethodOutput:
+    def _extract(
+        self,
+        x: torch.Tensor,
+        max_kpts: int = 2048,
+        custom_kpts: Optional[torch.Tensor] = None,
+    ) -> MethodOutput:
         x = x if x.dim() == 4 else x[None]
 
         # eventually cropping/padding to multiples of 14
@@ -106,7 +114,7 @@ class DeDoDeWrapper(MethodWrapper):
 
         return MethodOutput(kpts=kpts_pix[0], kpts_scores=scores[0], des=des)
 
-    def move_to(self, device="cpu"):
+    def move_to(self, device: str = "cpu") -> "MethodWrapper":
         """Move the model to the specified device."""
         self.device = device
         self.detector.to(device)

@@ -10,7 +10,7 @@ from methods.superpoint.models.superpoint import SuperPoint
 
 
 class SuperPointWrapper(MethodWrapper):
-    def __init__(self, device: str, border=16) -> None:
+    def __init__(self, device: str, border: int = 16) -> None:
         super().__init__(name="SuperPoint", border=border, device=device)
         config = {
             "keypoint_threshold": -1,  # min score, -1 to disable
@@ -21,7 +21,10 @@ class SuperPointWrapper(MethodWrapper):
 
     @torch.inference_mode()
     def _extract(
-        self, img: torch.Tensor, max_kpts: float | int, custom_kpts=None
+        self,
+        img: torch.Tensor,
+        max_kpts: float | int,
+        custom_kpts: torch.Tensor | None = None,
     ) -> MethodOutput:
         if max_kpts != self.model.config["max_keypoints"]:
             self.model.config["max_keypoints"] = max_kpts
