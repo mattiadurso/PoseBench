@@ -76,12 +76,11 @@ def load_h5(filename: str) -> Dict[str, Tensor]:
 
 def extract_image_matching_benchmark(
     wrapper,
-    data_path: str = "benchmarks/imc/data/phototourism",
+    data_path: str = "benchmarks_2D/imc/data/phototourism",
     max_kpts: int = 2048,
     output_path: str = None,
     scene_set: str = "test",
 ) -> Union[Path, None]:
-
     data_path = Path(data_path)
     assert data_path.exists(), f"Dataset path {data_path} does not exist."
 
@@ -179,6 +178,44 @@ def filter_matches(
         return {pair_name: np.zeros((0, 2))}
 
 
+def _process_scene_matches(scene_path, matcher, device, ransac_thr, njobs, output_path):
+    """Match every image pair in one scene, geometrically filter them, and save."""
+    # load descriptors and keypoints
+    desc_path = scene_path / "descriptors.h5"
+    kpts_path = scene_path / "keypoints.h5"
+    des_all = load_h5(desc_path)
+    kpts_all = load_h5(kpts_path)
+
+    # match all possible pairs
+    pairs = list(combinations(list(des_all.keys()), 2))
+    matches = {}
+    for img1_name, img0_name in tqdm(pairs, position=1, desc="Matching descriptors"):
+        des0 = des_all[img0_name]
+        des1 = des_all[img1_name]
+        matches_all = matcher.match([des0.to(device)], [des1.to(device)])[0].matches.cpu()
+        matches[f"{img0_name}-{img1_name}"] = matches_all
+
+    # Geometrically filter the matches
+    filter_matches_partial = partial(
+        filter_matches, kpts=kpts_all, ransac_thr=ransac_thr
+    )
+    matches_filtered = Parallel(n_jobs=njobs)(
+        delayed(filter_matches_partial)(pair_name, pair_matches)
+        for pair_name, pair_matches in tqdm(
+            matches.items(), position=1, desc="Geometric filtering the matches"
+        )
+    )
+    matches_filtered = {k: v for x in matches_filtered for k, v in x.items()}
+
+    # save keypoints, descriptors and matches
+    output_path_scene = output_path / "phototourism" / scene_path.name
+    output_path_scene.mkdir(parents=True, exist_ok=True)
+    os.system(f"cp {kpts_path} {output_path_scene / 'keypoints.h5'}")
+    os.system(f"cp {desc_path} {output_path_scene / 'descriptors.h5'}")
+    save_h5(matches, output_path_scene / "matches_multiview.h5")
+    save_h5(matches_filtered, output_path_scene / "matches_stereo.h5")
+
+
 def match_features(
     method_name: str,
     path: Path,
@@ -218,47 +255,9 @@ def match_features(
     bar = tqdm(sorted(list(path.iterdir())), position=0)
     for scene_path in bar:
         bar.set_description(f"Processing scene {scene_path.name}")
-        # load descriptors and keypoints
-        desc_path = scene_path / "descriptors.h5"
-        kpts_path = scene_path / "keypoints.h5"
-        des_all = load_h5(desc_path)
-        kpts_all = load_h5(kpts_path)
-
-        # match all possible pairs
-        pairs = list(combinations(list(des_all.keys()), 2))
-        matches = {}
-        for img1_name, img0_name in tqdm(
-            pairs, position=1, desc="Matching descriptors"
-        ):
-            des0 = des_all[img0_name]
-            des1 = des_all[img1_name]
-            matches_all = matcher.match([des0.to(device)], [des1.to(device)])[
-                0
-            ].matches.cpu()
-            matches[f"{img0_name}-{img1_name}"] = matches_all
-
-        # Geometrically filter the matches
-        filter_matches_partial = partial(
-            filter_matches, kpts=kpts_all, ransac_thr=ransac_thr
+        _process_scene_matches(
+            scene_path, matcher, device, ransac_thr, njobs, output_path
         )
-
-        matches_filtered = Parallel(n_jobs=njobs)(
-            delayed(filter_matches_partial)(pair_name, pair_matches)
-            for pair_name, pair_matches in tqdm(
-                matches.items(), position=1, desc="Geometric filtering the matches"
-            )
-        )
-        matches_filtered = {k: v for x in matches_filtered for k, v in x.items()}
-
-        # save matches
-        output_path_scene = output_path / "phototourism" / scene_path.name
-        output_path_scene.mkdir(parents=True, exist_ok=True)
-        # copy keypoints and descriptors
-        os.system(f"cp {kpts_path} {output_path_scene / 'keypoints.h5'}")
-        os.system(f"cp {desc_path} {output_path_scene / 'descriptors.h5'}")
-        # save matches
-        save_h5(matches, output_path_scene / "matches_multiview.h5")
-        save_h5(matches_filtered, output_path_scene / "matches_stereo.h5")
 
     return output_path
 
@@ -311,6 +310,56 @@ def import_data_to_benchmark(
         )
 
 
+def _custom_matches_config(method_name_json, matcher_name_converted, num_kpts):
+    """IMC config dict for evaluating externally supplied custom matches."""
+    return {
+        "config_common": {
+            "json_label": method_name_json,
+            "keypoint": method_name_json,
+            "descriptor": method_name_json,
+            "num_keypoints": num_kpts,
+        },
+        "config_phototourism_stereo": {
+            "use_custom_matches": True,
+            # 'custom_matches_name': f'{matcher_name_converted}-stereo',
+            "custom_matches_name": f"{matcher_name_converted}",
+            "geom": {"method": "cv2-8pt"},
+        },
+    }
+
+
+def _nn_matcher_config(method_name_json, method_name_converted):
+    """IMC config dict for the built-in nearest-neighbour matcher + degensac."""
+    return {
+        "config_common": {
+            "json_label": method_name_json,
+            "keypoint": method_name_converted,
+            "descriptor": method_name_converted,
+            "num_keypoints": 2048,
+        },
+        "config_phototourism_stereo": {
+            "use_custom_matches": False,
+            "matcher": {
+                "method": "nn",
+                "distance": "L2",
+                "flann": False,
+                "num_nn": 1,
+                "filtering": {"type": "none"},
+                "symmetric": {"enabled": True, "reduce": "both"},
+            },
+            "outlier_filter": {"method": None},
+            "geom": {
+                "method": "cmp-degensac-f",
+                "threshold": 1.0,
+                "confidence": 0.999999,
+                "max_iter": 100000,
+                "error_type": "sampson",
+                "degeneracy_check": True,
+            },
+        },
+    }
+
+
 def generate_json(method_name: str, matcher_name: str = None, num_kpts: int = 2048):
     method_name_converted = method_name.replace("_", "-").lower()
 
@@ -318,51 +367,12 @@ def generate_json(method_name: str, matcher_name: str = None, num_kpts: int = 20
         matcher_name_converted = matcher_name.replace("_", "-").lower()
         method_name_json = f"{method_name_converted}-matcher-{matcher_name_converted}"
         logger.info(matcher_name_converted)
-        config = {
-            "config_common": {
-                "json_label": method_name_json,
-                "keypoint": method_name_json,
-                "descriptor": method_name_json,
-                "num_keypoints": num_kpts,
-            },
-            "config_phototourism_stereo": {
-                "use_custom_matches": True,
-                # 'custom_matches_name': f'{matcher_name_converted}-stereo',
-                "custom_matches_name": f"{matcher_name_converted}",
-                "geom": {"method": "cv2-8pt"},
-            },
-        }
-
+        config = _custom_matches_config(
+            method_name_json, matcher_name_converted, num_kpts
+        )
     else:
         method_name_json = method_name_converted
-        config = {
-            "config_common": {
-                "json_label": method_name_json,
-                "keypoint": method_name_converted,
-                "descriptor": method_name_converted,
-                "num_keypoints": 2048,
-            },
-            "config_phototourism_stereo": {
-                "use_custom_matches": False,
-                "matcher": {
-                    "method": "nn",
-                    "distance": "L2",
-                    "flann": False,
-                    "num_nn": 1,
-                    "filtering": {"type": "none"},
-                    "symmetric": {"enabled": True, "reduce": "both"},
-                },
-                "outlier_filter": {"method": None},
-                "geom": {
-                    "method": "cmp-degensac-f",
-                    "threshold": 1.0,
-                    "confidence": 0.999999,
-                    "max_iter": 100000,
-                    "error_type": "sampson",
-                    "degeneracy_check": True,
-                },
-            },
-        }
+        config = _nn_matcher_config(method_name_json, method_name_converted)
 
     # ? save config as .json
     output_path = Path("/tmp/") / "config.json"
@@ -402,6 +412,131 @@ def run_benchmark(
         cwd=abs_root_path / "imc/image-matching-benchmark",
     )
     return method_name_json
+
+
+def _imc_scene_metrics(res_scene, scene_short_name, auc_th):
+    """Extract repeatability, AUC and inlier metrics for one scene's run_avg.
+
+    Returns:
+        dict mapping ``{scene}_rep`` / ``{scene}_aucN`` / ``{scene}_inliers`` to
+        rounded values (rep and auc are scaled by 100).
+    """
+    rep = (
+        res_scene.get("repeatability", {}).get("mean", [0, 0, 0])[2]
+        if res_scene.get("repeatability", {}).get("mean")
+        else 0
+    )
+
+    if auc_th == 5:
+        auc = res_scene.get("qt_auc_05", {}).get("mean", 0)
+        auc_col_name = f"{scene_short_name}_auc5"
+    elif auc_th == 10:
+        auc = res_scene.get("qt_auc_10", {}).get("mean", 0)
+        auc_col_name = f"{scene_short_name}_auc10"
+    else:
+        raise ValueError(f"auc_th must be 5 or 10, got {auc_th}")
+
+    inliers = res_scene.get("num_matches_geom_th_0.1", {}).get("mean", 0)
+    return {
+        f"{scene_short_name}_rep": round(rep * 100, 1),
+        auc_col_name: round(auc * 100, 1),
+        f"{scene_short_name}_inliers": round(inliers, 0),  # keep inliers as integers
+    }
+
+
+def _imc_method_results(path, scene_short, auc_th):
+    """Read one IMC result JSON file; return (method_config_name, per-scene dict)."""
+    with open(path) as f:
+        res = json.load(f)
+    res_phototourism = res["phototourism"]["results"]
+
+    method_config = (
+        res["config"]["config_common"]["keypoint"]
+        .replace("dedode-g", "dedodeG")
+        .replace("dedode-b", "dedode")
+        .replace("sandesc", "+SANDesc")
+    )
+
+    method_data = {}
+    for scene_name, scene_short_name in scene_short.items():
+        if scene_name not in res_phototourism:
+            continue
+        res_scene = res_phototourism[scene_name]["stereo"]["run_avg"]
+        method_data.update(_imc_scene_metrics(res_scene, scene_short_name, auc_th))
+    return method_config, method_data
+
+
+def _imc_results_to_df(df_results, scene_short, auc_th):
+    """Convert the nested results dict into a tidy, column-ordered DataFrame."""
+    df = pd.DataFrame(df_results).T
+
+    # Split the index into method, kpts_budget, and params
+    df_split = df.reset_index()
+    df_split["index_parts"] = df_split["index"].str.split("-")
+    df_split["method"] = df_split["index_parts"].apply(
+        lambda x: x[0] if len(x) > 0 else ""
+    )
+
+    custom_desc = []
+    for parts in df_split["index_parts"]:
+        if len(parts) > 0 and ("sandesc" in parts[0].lower() or "G" in parts[0]):
+            custom_desc.append(parts[0].split("+")[-1])
+        else:
+            custom_desc.append("")
+    df_split["custom_desc"] = custom_desc
+
+    # Remove +sandesc from method name
+    df_split["method"] = df_split["method"].str.replace("+sandesc", "", case=False)
+    df_split["method"] = df_split["method"].str.replace("+SANDesc", "", case=False)
+    df_split["method"] = df_split["method"].str.replace("G", "", case=False)
+    df_split["method"] = ["dedode" if "dedode" in m else m for m in df_split["method"]]
+
+    df_split["kpts_budget"] = df_split["index_parts"].apply(
+        lambda x: x[1] if len(x) > 1 else ""
+    )
+    df_split["params"] = df_split["index_parts"].apply(
+        lambda x: "-".join(x[2:]) if len(x) > 2 else ""
+    )
+
+    df = df_split.drop(["index"], axis=1)
+    return _order_imc_columns(df, scene_short, auc_th)
+
+
+def _order_imc_columns(df, scene_short, auc_th):
+    """Reorder columns into method-info first, then grouped rep/inliers/auc blocks."""
+    metric_cols = [
+        col
+        for col in df.columns
+        if col not in ["method", "custom_desc", "kpts_budget", "params"]
+    ]
+
+    # Group columns by metric type, in a consistent scene order
+    scene_order = sorted(scene_short.values())
+    rep_cols = [
+        f"{scene}_rep" for scene in scene_order if f"{scene}_rep" in metric_cols
+    ]
+    auc_suffix = f"auc{auc_th}"
+    auc_cols = [
+        f"{scene}_{auc_suffix}"
+        for scene in scene_order
+        if f"{scene}_{auc_suffix}" in metric_cols
+    ]
+    inliers_cols = [
+        f"{scene}_inliers" for scene in scene_order if f"{scene}_inliers" in metric_cols
+    ]
+
+    column_order = (
+        ["method", "custom_desc", "kpts_budget", "params"]
+        + rep_cols
+        + inliers_cols
+        + auc_cols
+    )
+    df = df[column_order]
+    df.index = range(len(df))
+
+    return df.sort_values(
+        by=["method", "custom_desc"], ascending=[True, True]
+    ).reset_index(drop=True)
 
 
 def load_imc_results(
@@ -447,131 +582,10 @@ def load_imc_results(
         return
 
     for path in paths:
-        with open(path) as f:
-            # load results
-            res = json.load(f)
-            res_phototourism = res["phototourism"]["results"]
-
-            # method name
-            method_config = (
-                res["config"]["config_common"]["keypoint"]
-                .replace("dedode-g", "dedodeG")
-                .replace("dedode-b", "dedode")
-                .replace("sandesc", "+SANDesc")
-            )
-
-            method_data = {}
-
-            for scene_name, scene_short_name in scene_short.items():
-                if scene_name not in res_phototourism:
-                    continue
-
-                res_scene = res_phototourism[scene_name]["stereo"]["run_avg"]
-
-                # Add metrics for this scene - multiply by 100 and round to 1 decimal except inliers
-                rep = (
-                    res_scene.get("repeatability", {}).get("mean", [0, 0, 0])[2]
-                    if res_scene.get("repeatability", {}).get("mean")
-                    else 0
-                )
-
-                # Select AUC metric based on auc_th parameter
-                if auc_th == 5:
-                    auc = res_scene.get("qt_auc_05", {}).get("mean", 0)
-                    auc_col_name = f"{scene_short_name}_auc5"
-                elif auc_th == 10:
-                    auc = res_scene.get("qt_auc_10", {}).get("mean", 0)
-                    auc_col_name = f"{scene_short_name}_auc10"
-                else:
-                    raise ValueError(f"auc_th must be 5 or 10, got {auc_th}")
-
-                inliers = res_scene.get("num_matches_geom_th_0.1", {}).get("mean", 0)
-
-                method_data[f"{scene_short_name}_rep"] = round(rep * 100, 1)
-                method_data[auc_col_name] = round(auc * 100, 1)
-                method_data[f"{scene_short_name}_inliers"] = round(
-                    inliers, 0
-                )  # Keep inliers as whole numbers
-
-            df_results[method_config] = method_data
+        method_config, method_data = _imc_method_results(path, scene_short, auc_th)
+        df_results[method_config] = method_data
 
     if return_df:
-        df = pd.DataFrame(df_results).T
-
-        # Split the index into method, kpts_budget, and params
-        df_split = df.reset_index()
-        df_split["index_parts"] = df_split["index"].str.split("-")
-
-        # Extract components with safe indexing
-        df_split["method"] = df_split["index_parts"].apply(
-            lambda x: x[0] if len(x) > 0 else ""
-        )
-        custom_desc = []
-        for parts in df_split["index_parts"]:
-            if len(parts) > 0 and ("sandesc" in parts[0].lower() or "G" in parts[0]):
-                custom_desc.append(parts[0].split("+")[-1])
-            else:
-                custom_desc.append("")
-        df_split["custom_desc"] = custom_desc
-
-        # Remove +sandesc from method name
-        df_split["method"] = df_split["method"].str.replace("+sandesc", "", case=False)
-        df_split["method"] = df_split["method"].str.replace("+SANDesc", "", case=False)
-        df_split["method"] = df_split["method"].str.replace("G", "", case=False)
-        df_split["method"] = [
-            "dedode" if "dedode" in m else m for m in df_split["method"]
-        ]
-
-        df_split["kpts_budget"] = df_split["index_parts"].apply(
-            lambda x: x[1] if len(x) > 1 else ""
-        )
-        df_split["params"] = df_split["index_parts"].apply(
-            lambda x: "-".join(x[2:]) if len(x) > 2 else ""
-        )
-
-        # Drop unnecessary columns and reorder
-        df = df_split.drop(["index"], axis=1)
-
-        # Group columns by metric type
-        metric_cols = [
-            col
-            for col in df.columns
-            if col not in ["method", "custom_desc", "kpts_budget", "params"]
-        ]
-
-        # Sort scenes for consistent ordering
-        scene_order = sorted(scene_short.values())
-
-        # Group columns by metric type
-        rep_cols = [
-            f"{scene}_rep" for scene in scene_order if f"{scene}_rep" in metric_cols
-        ]
-        auc_suffix = f"auc{auc_th}"
-        auc_cols = [
-            f"{scene}_{auc_suffix}"
-            for scene in scene_order
-            if f"{scene}_{auc_suffix}" in metric_cols
-        ]
-        inliers_cols = [
-            f"{scene}_inliers"
-            for scene in scene_order
-            if f"{scene}_inliers" in metric_cols
-        ]
-
-        # Reorder columns: method info first, then grouped metrics
-        column_order = (
-            ["method", "custom_desc", "kpts_budget", "params"]
-            + rep_cols
-            + inliers_cols
-            + auc_cols
-        )
-        df = df[column_order]
-
-        # Set simple integer index
-        df.index = range(len(df))
-
-        return df.sort_values(
-            by=["method", "custom_desc"], ascending=[True, True]
-        ).reset_index(drop=True)
+        return _imc_results_to_df(df_results, scene_short, auc_th)
 
     return df_results

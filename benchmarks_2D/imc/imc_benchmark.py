@@ -28,7 +28,7 @@ class IMC21MNNBenchmark:
     def __init__(
         self,
         device: str = "cuda",
-        data_path=abs_root_path / "benchmarks/imc/data/phototourism",
+        data_path=abs_root_path / "benchmarks_2D/imc/data/phototourism",
         th=1.0,
         min_score: float = 0.0,
         ratio_test: float = 1.0,
@@ -70,26 +70,8 @@ class IMC21MNNBenchmark:
             device="cpu",  # one can also use cuda here. With cpu, gpu stays free.
         )
 
-    @torch.no_grad()
-    def benchmark(self, wrapper):
-        """
-        Run the IMC benchmark
-
-        Args:
-            wrapper: The feature extraction wrapper
-            calibrated: Whether to use calibrated pose estimation
-
-        Returns:
-            tuple: (results_dict, timestamp)
-        """
-
-        method_name = f"{wrapper.name}_{self.max_kpts}kpts"
-
-        # Step 1: Extract features and store them
-        output_path = (
-            abs_root_path
-            / f"benchmarks/imc/to_import_imc/{self.scene_set}/{wrapper.name}_{self.max_kpts}kpts"
-        )
+    def _ensure_features_extracted(self, wrapper, output_path):
+        """Extract features into output_path unless already present (or overwriting)."""
         os.makedirs(output_path, exist_ok=True)
 
         if self.overwrite_extraction or not any(output_path.iterdir()):
@@ -110,16 +92,12 @@ class IMC21MNNBenchmark:
                 f"Features already extracted in {output_path}. Skipping extraction."
             )
 
-        # free gpu memory, from here wtrapper is not needed anymore
-        del wrapper
-        gc.collect()
-        torch.cuda.empty_cache()
-
-        # Step 2: Match them
-        # If already matched, will return the path.
+    def _match_import_run_copy(self, method_name, features_path):
+        """Match, import, run the IMC benchmark, then copy results to results/."""
+        # Step 2: Match them (returns the path if already matched).
         matched_features_path = match_features(
             method_name,
-            output_path,
+            features_path,
             self.matcher,
             ransac_thr=self.th,
             device=self.device,
@@ -140,21 +118,48 @@ class IMC21MNNBenchmark:
             self.matcher.name,
             scenes_set=self.scene_set,
             num_kpts=self.max_kpts,
-            # multiview=self.multiview,
         )
 
         # Step 4: Copy results to the results folder
-        results_path = abs_root_path / f"benchmarks/imc/results/{self.scene_set}"
+        results_path = abs_root_path / f"benchmarks_2D/imc/results/{self.scene_set}"
         os.makedirs(results_path, exist_ok=True)
         os.system(
             f"cp \
-                  benchmarks/imc/image-matching-benchmark/packed-{self.scene_set}/{method_name_json}.json \
+                  benchmarks_2D/imc/image-matching-benchmark/packed-{self.scene_set}/{method_name_json}.json \
                   {results_path / method_name_json}.json"
         )
-
         logger.info(
-            f"{method_name_json} results copyed to benchmarks/imc/results. \n\n"
+            f"{method_name_json} results copyed to benchmarks_2D/imc/results. \n\n"
         )
+
+    @torch.no_grad()
+    def benchmark(self, wrapper):
+        """
+        Run the IMC benchmark
+
+        Args:
+            wrapper: The feature extraction wrapper
+            calibrated: Whether to use calibrated pose estimation
+
+        Returns:
+            tuple: (results_dict, timestamp)
+        """
+
+        method_name = f"{wrapper.name}_{self.max_kpts}kpts"
+
+        # Step 1: Extract features and store them
+        output_path = (
+            abs_root_path
+            / f"benchmarks_2D/imc/to_import_imc/{self.scene_set}/{wrapper.name}_{self.max_kpts}kpts"
+        )
+        self._ensure_features_extracted(wrapper, output_path)
+
+        # free gpu memory, from here wtrapper is not needed anymore
+        del wrapper
+        gc.collect()
+        torch.cuda.empty_cache()
+
+        self._match_import_run_copy(method_name, output_path)
 
 
 if __name__ == "__main__":

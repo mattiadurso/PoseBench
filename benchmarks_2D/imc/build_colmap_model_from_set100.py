@@ -1,4 +1,3 @@
-import numpy as np
 import os
 import h5py
 import glob
@@ -7,26 +6,8 @@ from pathlib import Path
 from scipy.spatial.transform import Rotation as R_scipy
 
 
-def build_colmap_from_h5(base_path, output_dir):
-    """
-    Build COLMAP format model files from h5 calibration and depth files.
-
-    Args:
-        base_path: Base path containing calibration/ and depth_maps/ folders
-        output_dir: Output directory for COLMAP files
-    """
-    os.makedirs(output_dir, exist_ok=True)
-
-    calibration_dir = os.path.join(base_path, "calibration")
-    depth_dir = os.path.join(base_path, "depth_maps")
-
-    # Get all calibration files
-    calib_files = sorted(glob.glob(os.path.join(calibration_dir, "calibration_*.h5")))
-
-    # Extract image identifiers from calibration files
-    image_ids = [Path(f).stem.replace("calibration_", "") for f in calib_files]
-
-    # 1. Write cameras.txt
+def _write_cameras_txt(output_dir, calib_files, image_ids, depth_dir):
+    """Write COLMAP cameras.txt from per-image calibration and depth files."""
     with open(f"{output_dir}/cameras.txt", "w") as cam_file:
         cam_file.write("# Camera list with one line of data per camera:\n")
         cam_file.write("#   CAMERA_ID, MODEL, WIDTH, HEIGHT, PARAMS[]\n")
@@ -45,9 +26,11 @@ def build_colmap_from_h5(base_path, output_dir):
             fx, fy = K[0, 0], K[1, 1]
             cx, cy = K[0, 2], K[1, 2]
 
-            cam_file.write(f"{i+1} PINHOLE {w} {h} {fx} {fy} {cx} {cy}\n")
+            cam_file.write(f"{i + 1} PINHOLE {w} {h} {fx} {fy} {cx} {cy}\n")
 
-    # 2. Write images.txt
+
+def _write_images_txt(output_dir, calib_files, image_ids):
+    """Write COLMAP images.txt with poses derived from calibration files."""
     with open(f"{output_dir}/images.txt", "w") as img_file:
         img_file.write("# Image list with two lines of data per image:\n")
         img_file.write("#   IMAGE_ID, QW, QX, QY, QZ, TX, TY, TZ, CAMERA_ID, NAME\n")
@@ -74,9 +57,32 @@ def build_colmap_from_h5(base_path, output_dir):
 
             image_name = f"{img_id}.jpg"  # Adjust extension as needed
 
-            img_file.write(f"{i+1} {quat[0]} {quat[1]} {quat[2]} {quat[3]} ")
-            img_file.write(f"{T[0]} {T[1]} {T[2]} {i+1} {image_name}\n")
+            img_file.write(f"{i + 1} {quat[0]} {quat[1]} {quat[2]} {quat[3]} ")
+            img_file.write(f"{T[0]} {T[1]} {T[2]} {i + 1} {image_name}\n")
             img_file.write("\n")  # Empty line for 2D points
+
+
+def build_colmap_from_h5(base_path, output_dir):
+    """
+    Build COLMAP format model files from h5 calibration and depth files.
+
+    Args:
+        base_path: Base path containing calibration/ and depth_maps/ folders
+        output_dir: Output directory for COLMAP files
+    """
+    os.makedirs(output_dir, exist_ok=True)
+
+    calibration_dir = os.path.join(base_path, "calibration")
+    depth_dir = os.path.join(base_path, "depth_maps")
+
+    # Get all calibration files
+    calib_files = sorted(glob.glob(os.path.join(calibration_dir, "calibration_*.h5")))
+
+    # Extract image identifiers from calibration files
+    image_ids = [Path(f).stem.replace("calibration_", "") for f in calib_files]
+
+    _write_cameras_txt(output_dir, calib_files, image_ids, depth_dir)
+    _write_images_txt(output_dir, calib_files, image_ids)
 
     # 3. Write points3D.txt (from depth maps)
     with open(f"{output_dir}/points3D.txt", "w") as pts_file:
