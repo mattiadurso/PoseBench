@@ -31,7 +31,7 @@ except ImportError:
     logger.info(
         "tqdm not found, you'll get no progress bars. Install it with `pip install tqdm`."
     )
-    from benchmarks_2D.benchmark_utils import fake_tqdm as tqdm
+    from benchmarks_2D.utils_benchmark import fake_tqdm as tqdm
 
 try:
     import pydegensac
