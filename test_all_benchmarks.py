@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
-import subprocess, time, csv, os
+import subprocess
+import time
+import csv
+import os
 from datetime import datetime
 
 COMMANDS = [
