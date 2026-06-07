@@ -9,6 +9,7 @@ from common import geometry
 
 
 def test_is_torch():
+    """is_torch returns True only for torch tensors, False otherwise."""
     assert geometry.is_torch(torch.zeros(3)) is True
     assert geometry.is_torch(np.zeros(3)) is False
     assert geometry.is_torch([1, 2, 3]) is False
@@ -16,6 +17,7 @@ def test_is_torch():
 
 
 def test_normalize_pixel_coordinates_corners_and_center():
+    """normalize_pixel_coordinates maps corners/center to [-1, 1] as expected."""
     # shape (H, W) = (4, 2); convention: top-left pixel center at (0.5, 0.5).
     shape = (4, 2)
     xy = torch.tensor([[[0.0, 0.0], [2.0, 4.0], [1.0, 2.0]]])  # 1x3x2 (x, y)
@@ -26,6 +28,7 @@ def test_normalize_pixel_coordinates_corners_and_center():
 
 
 def test_normalize_pixel_coordinates_does_not_mutate_input():
+    """normalize_pixel_coordinates leaves its input tensor unchanged."""
     xy = torch.tensor([[[1.0, 2.0]]])
     xy_copy = xy.clone()
     geometry.normalize_pixel_coordinates(xy, (4, 2))
@@ -33,6 +36,7 @@ def test_normalize_pixel_coordinates_does_not_mutate_input():
 
 
 def test_grid_sample_nan_constant_image_returns_constant():
+    """grid_sample_nan returns the constant value for in-bounds points."""
     # A constant image must sample to that constant everywhere inside it.
     img = torch.full((1, 3, 8, 8), 0.5)
     xy = torch.tensor([[[2.0, 2.0], [5.0, 6.0]]])  # 1x2x2, inside the image
@@ -43,6 +47,7 @@ def test_grid_sample_nan_constant_image_returns_constant():
 
 
 def test_grid_sample_nan_input_nan_propagates():
+    """grid_sample_nan yields nan output for nan input coordinates."""
     img = torch.rand(1, 1, 8, 8)
     xy = torch.tensor([[[3.0, 3.0], [float("nan"), float("nan")]]])
     sampled, mask = geometry.grid_sample_nan(xy, img)
@@ -53,6 +58,7 @@ def test_grid_sample_nan_input_nan_propagates():
 
 
 def test_grid_sample_nan_out_of_bounds_becomes_nan():
+    """grid_sample_nan returns nan for out-of-bounds points."""
     img = torch.rand(1, 1, 8, 8)
     xy = torch.tensor([[[100.0, 100.0]]])  # far outside
     sampled, _ = geometry.grid_sample_nan(xy, img)
@@ -60,6 +66,7 @@ def test_grid_sample_nan_out_of_bounds_becomes_nan():
 
 
 def test_grid_sample_nan_handles_3d_image():
+    """grid_sample_nan handles a 3D (B,H,W) image without a channel dimension."""
     # 3D image (B,H,W) -> result has no channel dimension.
     img = torch.full((1, 8, 8), 0.25)
     xy = torch.tensor([[[2.0, 2.0]]])
@@ -69,6 +76,7 @@ def test_grid_sample_nan_handles_3d_image():
 
 
 def test_filter_outside_marks_outside_points_nan():
+    """filter_outside sets out-of-image points to nan and keeps inside points."""
     shape = (10, 10)  # H, W
     xy = torch.tensor([[[5.0, 5.0], [-1.0, 5.0], [5.0, 11.0]]])
     out = geometry.filter_outside(xy, shape)
@@ -78,6 +86,7 @@ def test_filter_outside_marks_outside_points_nan():
 
 
 def test_filter_outside_border():
+    """filter_outside discards points within the border band."""
     shape = (10, 10)
     xy = torch.tensor([[[1.0, 1.0]]])
     # With border=2, (1,1) is within the border band -> filtered out.
@@ -86,6 +95,7 @@ def test_filter_outside_border():
 
 
 def test_compute_relative_pose_identity():
+    """compute_relative_pose returns identity for two identical poses."""
     R = torch.eye(3)
     t = torch.zeros(3)
     rots, trans = geometry.compute_relative_pose(R, t, R, t)
@@ -94,6 +104,7 @@ def test_compute_relative_pose_identity():
 
 
 def test_compute_relative_pose_known_rotation():
+    """compute_relative_pose recovers a known 90deg relative rotation."""
     # 90deg about z for pose 2, identity for pose 1 -> relative is the 90deg rot.
     theta = math.pi / 2
     Rz = torch.tensor(

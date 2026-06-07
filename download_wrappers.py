@@ -1,3 +1,5 @@
+"""Clone third-party method implementations into methods/ per download_wrappers.yaml."""
+
 import os
 import yaml
 

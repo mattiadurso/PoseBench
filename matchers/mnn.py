@@ -1,3 +1,5 @@
+"""Mutual-nearest-neighbor (MNN) descriptor matcher and matching utilities."""
+
 from __future__ import annotations
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
@@ -76,12 +78,15 @@ class MatchingMatrixExtra:
     score: Tensor | None = None  # (B),n0,n1 float
 
     def shape(self) -> th.Size:
+        """Return the shape of the ``proposed`` matching matrix."""
         return self.proposed.shape
 
     def __repr__(self) -> str:
+        """Return a short summary with the matrix shape and device."""
         return f"MatchingMatrixExtra [{tuple(self.shape())}]  device: {self.proposed.device}"
 
     def __getitem__(self, b: int = 0) -> MatchingMatrixExtra:
+        """Index batch element ``b``, slicing every present matrix on its first dim."""
         assert len(self.shape()) >= 3, (
             "MatchingMatrix must have at least 3 dimensions to be sliced"
         )
@@ -96,6 +101,7 @@ class MatchingMatrixExtra:
         )
 
     def to(self, device: str) -> MatchingMatrixExtra:
+        """Move every present tensor to ``device`` in place and return ``self``."""
         self.proposed = self.proposed.to(device)
         self.correct = self.correct.to(device) if self.correct is not None else None
         self.wrong = self.wrong.to(device) if self.wrong is not None else None
@@ -110,11 +116,14 @@ class MatchingMatrixExtra:
         return self
 
     def cpu(self) -> MatchingMatrixExtra:
+        """Move every present tensor to CPU and return ``self``."""
         return self.to("cpu")
 
 
 @dataclass
 class Matches:
+    """Matches for one image pair plus the score matrix and optional GT diagnostics."""
+
     matches: Tensor  # n_matches,2
     score_matrix: Tensor  # n0,n1
     score_matrix_with_bins: Tensor | None = None  # n0+1,n1+1
@@ -123,6 +132,7 @@ class Matches:
 
     @property
     def matching_matrix(self) -> Tensor:
+        """Boolean ``(n0, n1)`` matrix with True at each proposed match position."""
         output = th.zeros_like(self.score_matrix, dtype=th.bool)
         output[self.matches[:, 0], self.matches[:, 1]] = True
         return output
@@ -130,6 +140,7 @@ class Matches:
     def _compute_matching_matrix_extra(
         self, matching_matrix_GT_with_bins: Tensor
     ) -> None:
+        """Decompose proposed matches vs. GT into ``matching_matrix_extra`` (cached)."""
         self.matching_matrix_GT_with_bins = matching_matrix_GT_with_bins
         self.matching_matrix_extra = (
             compute_correct_wrong_mismatched_inexistent_unsure_matches(
@@ -248,6 +259,7 @@ class Matches:
         return (n_masked_by_columns + n_masked_by_rows).item()
 
     def to(self, device: str) -> Matches:
+        """Move the matches and score matrices to ``device`` in place; return ``self``."""
         self.matches = self.matches.to(device)
         self.score_matrix = self.score_matrix.to(device)
         self.score_matrix_with_bins = (
@@ -258,18 +270,24 @@ class Matches:
         return self
 
     def cpu(self) -> Matches:
+        """Move the matches and score matrices to CPU and return ``self``."""
         return self.to("cpu")
 
     def __repr__(self) -> str:
+        """Return a short summary with the matches shape and device."""
         return f"Matches [{tuple(self.matches.shape)}]  device: {self.matches.device}"
 
     @property
     def shape(self) -> tuple[int, ...]:
+        """Return the ``(n0, n1)`` shape of the score matrix."""
         return self.score_matrix.shape
 
 
 class Matcher(ABC):
+    """Abstract base class for descriptor matchers."""
+
     def __init__(self) -> None:
+        """Initialize the matcher with a default ``name``."""
         super().__init__()
         self.name = "Matcher"
 
@@ -280,13 +298,28 @@ class Matcher(ABC):
 
     @abstractmethod
     def __repr__(self) -> str:
+        """Return a human-readable identifier for the matcher."""
         raise NotImplementedError
 
 
 class MNN(Matcher):
+    """Mutual-nearest-neighbor matcher over the descriptor inner-product scores."""
+
     def __init__(
         self, min_score: float, ratio_test: float = 1.0, device: str = "cpu"
     ) -> None:
+        """Configure thresholds and build a ``name`` encoding the active filters.
+
+        The ``name`` is ``"MNN"``, suffixed with the min score when it is not the
+        ``-1.0`` sentinel, and with ``"-ratiotest<ratio_test>"`` when ``ratio_test``
+        differs from ``1.0``.
+
+        Args:
+            min_score: Minimum inner-product score for a match to be kept; ``-1.0``
+                disables the threshold (and the name suffix).
+            ratio_test: Lowe-style ratio threshold; ``1.0`` disables the ratio test.
+            device: Device the matcher operates on.
+        """
         self.min_score = min_score
         self.ratio_test = ratio_test
         self.device = device
@@ -317,6 +350,7 @@ class MNN(Matcher):
         return output
 
     def __repr__(self) -> str:
+        """Return the matcher ``name`` encoding its active filters."""
         return self.name
 
 

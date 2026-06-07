@@ -47,6 +47,7 @@ GOLDEN = {
 
 
 def _fixture():
+    """Build the fixed Matches plus ground-truth matrix shared by the golden tests."""
     torch.manual_seed(0)
     score = torch.rand(4, 5)
     matches = torch.tensor([[0, 1], [1, 0], [3, 4]])
@@ -57,6 +58,7 @@ def _fixture():
 
 
 def test_compute_scores_stats_matches_golden():
+    """compute_scores_stats reproduces the full golden statistics dict."""
     m, gt = _fixture()
     stats = m.compute_scores_stats(gt)
     assert set(stats.keys()) == set(GOLDEN.keys())
@@ -71,6 +73,7 @@ def test_compute_scores_stats_matches_golden():
 
 
 def test_ccw_category_counts_match_golden():
+    """The match-category classifier reproduces the golden per-category counts."""
     m, gt = _fixture()
     out = ccw(m.matching_matrix[None], gt[None])[0]
     counts = {

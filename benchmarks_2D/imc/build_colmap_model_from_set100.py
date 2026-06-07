@@ -1,3 +1,5 @@
+"""Build COLMAP sparse models from set_100 h5 calibration/depth and triangulate points."""
+
 import os
 import h5py
 import glob

@@ -13,6 +13,7 @@ from benchmarks_2D.hpatches.hpatches_benchmark import _hpatches_threshold_metric
 
 
 def _row():
+    """Build a synthetic aggregated metrics row for the threshold builder."""
     return pd.Series(
         {
             "mean_repeatability": 0.5,
@@ -30,6 +31,7 @@ def _row():
 
 
 def _homography_data():
+    """Build a synthetic per-(accuracy, ransac)-threshold homography table."""
     return pd.DataFrame(
         {
             "accuracy_thr": [3.0, 3.0, 5.0],
@@ -40,6 +42,7 @@ def _homography_data():
 
 
 def test_threshold_metrics_picks_best_ransac():
+    """The builder selects the highest homography accuracy across ransac thresholds."""
     m = _hpatches_threshold_metrics(_row(), _homography_data(), 3)
     assert m["repeatability_3"] == {"mean": 0.5, "median": 0.4}
     assert m["matching_score_3"] == {"mean": 0.3, "median": 0.25}
@@ -59,6 +62,7 @@ def test_threshold_metrics_picks_best_ransac():
 
 
 def test_threshold_metrics_no_homography_rows():
+    """A missing accuracy threshold yields zeroed homography metrics and no best ransac."""
     m = _hpatches_threshold_metrics(_row(), _homography_data(), 7)  # no accuracy_thr==7
     assert m["homography_accuracy_7"] == {
         "mean": 0.0,
@@ -68,6 +72,7 @@ def test_threshold_metrics_no_homography_rows():
 
 
 def test_threshold_metrics_nan_repeatability():
+    """A NaN repeatability input propagates as NaN into the metrics dict."""
     row = _row()
     row["mean_repeatability"] = float("nan")
     m = _hpatches_threshold_metrics(row, _homography_data(), 3)

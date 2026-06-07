@@ -16,6 +16,7 @@ from wrappers_manager import get_wrappers_list, wrappers_manager
 
 
 def test_get_wrappers_list_discovers_known_methods():
+    """Wrapper discovery lists real methods while excluding base and example wrappers."""
     wrappers = get_wrappers_list()
     assert isinstance(wrappers, list)
     assert "disk" in wrappers  # the reference method
@@ -25,6 +26,7 @@ def test_get_wrappers_list_discovers_known_methods():
 
 
 def test_unknown_wrapper_raises():
+    """Requesting an unknown wrapper name raises ValueError."""
     with pytest.raises(ValueError):
         wrappers_manager("definitely-not-a-method")
 
@@ -37,6 +39,7 @@ def _synthetic_image(device, size=256, seed=0):
 
 @pytest.fixture(scope="module")
 def disk_wrapper():
+    """Provide a disk-kornia wrapper, skipping when CUDA or weights are unavailable."""
     if not torch.cuda.is_available():
         pytest.skip("disk-kornia requires CUDA")
     try:
@@ -46,6 +49,7 @@ def disk_wrapper():
 
 
 def test_disk_kornia_extract_end_to_end(disk_wrapper):
+    """disk-kornia extraction returns a valid MethodOutput with in-bounds keypoints."""
     img = _synthetic_image("cuda")
     out = disk_wrapper.extract(img, max_kpts=256)
     assert isinstance(out, MethodOutput)
@@ -58,6 +62,7 @@ def test_disk_kornia_extract_end_to_end(disk_wrapper):
 
 
 def test_disk_kornia_extract_and_match(disk_wrapper):
+    """disk-kornia descriptors from two images feed the MNN matcher to valid Matches."""
     out0 = disk_wrapper.extract(_synthetic_image("cuda", seed=0), max_kpts=256)
     out1 = disk_wrapper.extract(_synthetic_image("cuda", seed=1), max_kpts=256)
     (result,) = MNN(min_score=-1.0).match([out0.des.cpu()], [out1.des.cpu()])

@@ -1,3 +1,5 @@
+"""HPatches benchmark entry point for keypoint detection, description, and matching."""
+
 import os
 
 os.environ.setdefault("CUBLAS_WORKSPACE_CONFIG", ":4096:8")
@@ -122,6 +124,7 @@ class HPatchesBenchmark:
         feature_path: str = None,
         save_csv: bool = False,
     ):
+        """Configure paths, keypoint budget, thresholds, and the MNN matcher."""
         self.data_path = Path(data_path)
         self.sequences = []
         self.results = {}

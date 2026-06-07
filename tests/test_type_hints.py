@@ -50,6 +50,7 @@ def _unannotated(func: ast.FunctionDef) -> list[str]:
 
 @pytest.mark.parametrize("module", ALL_MODULES)
 def test_module_fully_annotated(module):
+    """Every function in a core module annotates its params and return type."""
     tree = ast.parse((REPO_ROOT / module).read_text())
     problems = []
     for node in ast.walk(tree):

@@ -1,3 +1,5 @@
+"""Helpers for IMC21: feature extraction, matching, import, run, and result loading."""
+
 import sys
 from pathlib import Path
 
@@ -81,6 +83,18 @@ def extract_image_matching_benchmark(
     output_path: str = None,
     scene_set: str = "test",
 ) -> Union[Path, None]:
+    """Extract keypoints/descriptors for every image of each scene and save as .h5.
+
+    Args:
+        wrapper: Feature extraction wrapper exposing ``load_image`` and ``extract``.
+        data_path: Path to the phototourism dataset.
+        max_kpts: Maximum number of keypoints per image.
+        output_path: Directory where the ``phototourism/<scene>`` outputs are written.
+        scene_set: Which scene split to process, ``"val"`` or ``"test"``.
+
+    Returns:
+        The ``output_path`` the features were written to.
+    """
     data_path = Path(data_path)
     assert data_path.exists(), f"Dataset path {data_path} does not exist."
 
@@ -133,6 +147,17 @@ def extract_image_matching_benchmark(
 def filter_matches(
     pair_name: str, pair_matches: Tensor, kpts: Dict[str, Tensor], ransac_thr: float
 ) -> Dict:
+    """Geometrically filter one pair's matches via fundamental-matrix RANSAC.
+
+    Args:
+        pair_name: ``"<img0>-<img1>"`` identifier for the image pair.
+        pair_matches: Tensor of matched keypoint index pairs.
+        kpts: Mapping from image name to its keypoints.
+        ransac_thr: Reprojection threshold (px) for the RANSAC estimator.
+
+    Returns:
+        Dict mapping ``pair_name`` to the transposed inlier matches (empty if too few).
+    """
     # ? geometrical filter the pairs
     img0_name, img1_name = pair_name.split("-")
 
@@ -225,6 +250,20 @@ def match_features(
     njobs: int = 12,
     overwrite_extraction=False,
 ):
+    """Match all image pairs per scene, geometrically filter, and save to a new path.
+
+    Args:
+        method_name: Name of the feature method, used to build the output dir name.
+        path: Path holding the extracted ``phototourism`` features.
+        matcher: Matcher object with a ``name`` attribute and ``match`` method.
+        ransac_thr: RANSAC reprojection threshold (px) for geometric filtering.
+        device: Torch device used for matching.
+        njobs: Number of parallel jobs for the geometric filtering.
+        overwrite_extraction: If True, recompute even when matches already exist.
+
+    Returns:
+        Path to the directory containing the saved matches.
+    """
     # if debugging jobs =1
     if sys.gettrace() is not None:
         njobs = 1
@@ -265,6 +304,13 @@ def match_features(
 def import_data_to_benchmark(
     extracted_path: Path, scenes_set: str, matcher_name: str = None
 ):
+    """Import extracted features (and custom matches) into the image-matching-benchmark.
+
+    Args:
+        extracted_path: Path to the extracted features/matches to import.
+        scenes_set: Benchmark subset, e.g. ``"val"`` or ``"test"``.
+        matcher_name: If given, also import custom matches under this matcher name.
+    """
     logger.info("Importing into benchmark")
 
     # Convert Path to string for subprocess
@@ -361,6 +407,16 @@ def _nn_matcher_config(method_name_json, method_name_converted):
 
 
 def generate_json(method_name: str, matcher_name: str = None, num_kpts: int = 2048):
+    """Build and write the IMC run config JSON for the given method/matcher.
+
+    Args:
+        method_name: Feature method name (converted to a lowercase, dashed label).
+        matcher_name: If given, use a custom-matches config; otherwise NN + degensac.
+        num_kpts: Keypoint budget recorded in the config.
+
+    Returns:
+        Tuple of (path to the written config JSON, the JSON method label).
+    """
     method_name_converted = method_name.replace("_", "-").lower()
 
     if matcher_name is not None:
@@ -389,6 +445,19 @@ def run_benchmark(
     multiview: bool = False,
     run_viz: bool = False,
 ) -> str:
+    """Generate the config and invoke the IMC benchmark's ``run.py`` as a subprocess.
+
+    Args:
+        method_name: Feature method name.
+        matcher_name: Matcher name (drives custom vs. NN matching config).
+        scenes_set: Benchmark subset to evaluate.
+        num_kpts: Keypoint budget passed to the config.
+        multiview: Whether to enable multiview evaluation.
+        run_viz: Whether to enable visualization output.
+
+    Returns:
+        The JSON method label produced for this run.
+    """
     json_path, method_name_json = generate_json(
         method_name, matcher_name, num_kpts=num_kpts
     )

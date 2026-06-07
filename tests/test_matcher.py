@@ -7,6 +7,7 @@ from matchers.mnn import mutual_nearest_neighbors_from_score_matrix as _mnn_from
 
 
 def test_ratio_test_branch_golden():
+    """Stricter ratio-test thresholds admit fewer matches (golden counts)."""
     # Pins the ratio_test branch of mutual_nearest_neighbors_from_score_matrix
     # on a fixed-seed score matrix: stricter ratio_test admits fewer matches.
     torch.manual_seed(0)
@@ -21,6 +22,7 @@ def test_ratio_test_branch_golden():
 
 
 def test_identical_descriptors_match_one_to_one():
+    """Identical orthonormal descriptor sets match each keypoint to its own index."""
     # Orthonormal descriptors -> each row's best match is its own column.
     des = torch.eye(4)
     matcher = MNN(min_score=-1.0)
@@ -34,6 +36,7 @@ def test_identical_descriptors_match_one_to_one():
 
 
 def test_matching_matrix_property_reflects_matches():
+    """The matching_matrix property is a boolean matrix reflecting the matches."""
     des = torch.eye(3)
     matcher = MNN(min_score=-1.0)
     (result,) = matcher.match([des], [des])
@@ -43,6 +46,7 @@ def test_matching_matrix_property_reflects_matches():
 
 
 def test_min_score_filters_weak_matches():
+    """A high min_score drops low-inner-product matches that a low one keeps."""
     # Descriptors with low inner product should be filtered by a high min_score.
     des0 = torch.tensor([[1.0, 0.0], [0.0, 1.0]])
     des1 = torch.tensor([[0.6, 0.0], [0.0, 0.6]])  # inner products are 0.6
@@ -53,6 +57,7 @@ def test_min_score_filters_weak_matches():
 
 
 def test_empty_descriptors_yield_no_matches():
+    """An empty descriptor set yields no matches and a correctly shaped score matrix."""
     des0 = torch.zeros(0, 4)
     des1 = torch.eye(4)
     (result,) = MNN(min_score=-1.0).match([des0], [des1])

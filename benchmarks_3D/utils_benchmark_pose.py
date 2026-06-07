@@ -1,3 +1,5 @@
+"""3D scene pose-estimation benchmark comparing COLMAP reconstructions."""
+
 from typing import Any, Optional, Sequence
 
 import numpy as np

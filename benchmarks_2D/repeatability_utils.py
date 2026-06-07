@@ -1,3 +1,5 @@
+"""Keypoint repeatability metrics and the geometry helpers used to compute them."""
+
 import torch
 from torch import Tensor
 
@@ -298,10 +300,12 @@ def compute_repeatabilities(
 
 
 def to_homogeneous(xy: Tensor) -> Tensor:
+    """Append a unit coordinate to ``xy`` to form homogeneous coordinates."""
     return torch.cat((xy, torch.ones_like(xy[..., 0:1])), dim=-1)
 
 
 def from_homogeneous(points: Tensor, eps: float = 1e-8) -> Tensor:
+    """Convert homogeneous points to Euclidean, guarding division by near-zero ``z``."""
     z_vec: Tensor = points[..., -1:]
     # set the results of division by zero/near-zero to 1.0
     # follow the convention of opencv:

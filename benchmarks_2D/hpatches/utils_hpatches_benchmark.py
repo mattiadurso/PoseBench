@@ -1,3 +1,5 @@
+"""Utility functions for the HPatches benchmark (warping, stats, and result display)."""
+
 import os
 import cv2
 import math
@@ -42,6 +44,7 @@ def load_hpatches_in_memory(wrapper, root: str | Path, max_workers: int = 16) ->
     scenes = sorted([p for p in root.iterdir() if p.is_dir()])
 
     def _load_one(scene: Path):
+        """Load one scene's six images and their reference homographies."""
         imgs, homs = [], []
         for j in range(1, 7):
             img = wrapper.load_image(scene / f"{j}.ppm").cpu()
@@ -302,6 +305,7 @@ def compute_corner_error(
     H_gt = H0_1.detach()
 
     def _solve_one(thr: float):
+        """Solve the corner-error homography for a single RANSAC threshold."""
         return _solve_corner_homography(
             thr,
             xy0_np,
@@ -375,6 +379,22 @@ def compute_coverages(
     px_thrs: float | list[float],
     coverage_kernel_size: int,
 ) -> Tuple[float, float] | Tuple[Tensor, Tensor]:
+    """Compute spatial inlier coverage and per-keypoint coverage at each pixel threshold.
+
+    Args:
+        xy0: keypoints in image 0 (n0, 2).
+        xy1: keypoints in image 1 (n1, 2).
+        xy0_proj: keypoints of image 0 projected into image 1 (NaN if outside).
+        xy1_proj: keypoints of image 1 projected into image 0 (NaN if outside).
+        img0_shape: shape (H, W) of image 0.
+        img1_shape: shape (H, W) of image 1.
+        px_thrs: pixel inlier threshold(s).
+        coverage_kernel_size: max-pool kernel size used to dilate inlier locations.
+
+    Returns:
+        (coverage, coverage_per_kpt): scalars if a single threshold is given,
+        otherwise tensors indexed by threshold.
+    """
     assert xy0.ndim == 2 and xy1.ndim == 2, (
         f"xy0 and xy1 must be 2D tensors, got {xy0.shape} and {xy1.shape}"
     )
@@ -437,6 +457,7 @@ def compute_coverages(
 
 
 def _is_nan(x):
+    """Return True if ``x`` is NaN, tolerating floats, numpy/torch scalars, and strings."""
     # Fast paths for common scalar types
     if isinstance(x, float):
         return math.isnan(x)
@@ -464,6 +485,7 @@ def _is_nan(x):
 
 
 def _as_float2(x, device):
+    """Coerce ``x`` to a float32 (N, 2) tensor on ``device`` (empty if None)."""
     if x is None:
         return torch.zeros((0, 2), dtype=torch.float32, device=device)
     if torch.is_tensor(x):
@@ -476,6 +498,7 @@ def _as_float2(x, device):
 
 
 def _as_long2(matches, device):
+    """Coerce ``matches`` to a long (M, 2) index tensor on ``device`` (empty if None)."""
     if matches is None:
         return torch.zeros((0, 2), dtype=torch.long, device=device)
     if torch.is_tensor(matches):
@@ -493,6 +516,7 @@ def _as_long2(matches, device):
 
 
 def _safe_div(num, den):
+    """Divide ``num`` by ``den``, returning 0.0 when the denominator is non-positive."""
     num = float(num)
     den = float(den)
     return (num / den) if den > 0.0 else 0.0
@@ -591,6 +615,29 @@ def compute_matching_stats_homography(
     device: str = "cpu",
     njobs: int = 1,
 ):
+    """Compute per-threshold matching stats and RANSAC homography corner-error rows for a pair.
+
+    Args:
+        xy0: keypoints in image 0.
+        xy1: keypoints in image 1.
+        H0_1: ground-truth homography mapping image 0 to image 1.
+        img0_shape: shape (H, W) of image 0.
+        img1_shape: shape (H, W) of image 1.
+        mode: corner-error mode passed downstream (e.g. "hpatches"/"symmetric").
+        matches: proposed matches (M, 2) as [idx0, idx1].
+        px_thrs: pixel thresholds for repeatability/accuracy/score.
+        ransac_thresholds: RANSAC reprojection thresholds for homography estimation.
+        compute_coverage: whether to compute coverage rows.
+        coverage_kernel_size: kernel size for coverage dilation.
+        evaluate_corner_error: whether to estimate homographies and corner errors.
+        evaluate_corner_error_keypoints: unused flag kept for signature compatibility.
+        device: torch device for the computation.
+        njobs: number of parallel jobs (unused here; inner calls run single-threaded).
+
+    Returns:
+        (list_stats, list_hstats, list_cov): threshold stat rows, homography
+        evaluation rows, and coverage rows.
+    """
     device = torch.device(device)
     xy0 = _as_float2(xy0, device)
     xy1 = _as_float2(xy1, device)

@@ -1,3 +1,5 @@
+"""Entry point for evaluating a feature method with MNN matching on the IMC21 benchmark."""
+
 import os
 
 os.environ.setdefault("CUBLAS_WORKSPACE_CONFIG", ":4096:8")
@@ -25,6 +27,8 @@ logger = logging.getLogger(__name__)
 
 
 class IMC21MNNBenchmark:
+    """Runs the IMC21 stereo benchmark for a wrapper using mutual-NN matching."""
+
     def __init__(
         self,
         device: str = "cuda",

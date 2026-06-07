@@ -18,6 +18,7 @@ from benchmarks_2D.benchmark_parallel import Benchmark
 # Parsers
 # --------------------------------------------------------------------------- #
 def test_parse_pair_megadepth_format():
+    """parse_pair returns correctly shaped intrinsics and pose for MegaDepth lines."""
     K = [500, 0, 320, 0, 500, 240, 0, 0, 1]
     R = [1, 0, 0, 0, 1, 0, 0, 0, 1]
     t = [0.1, 0.2, 0.3]
@@ -33,6 +34,7 @@ def test_parse_pair_megadepth_format():
 
 
 def test_parse_pair_unknown_benchmark_raises():
+    """parse_pair raises ValueError for an unrecognized benchmark name."""
     import pytest
 
     with pytest.raises(ValueError):
@@ -40,6 +42,7 @@ def test_parse_pair_unknown_benchmark_raises():
 
 
 def test_parse_md1500_poses(tmp_path):
+    """parse_md1500_poses parses a poses file into per-view K/R/t/P metadata."""
     poses = tmp_path / "poses.txt"
     poses.write_text(
         "# header line is skipped\n"
@@ -64,6 +67,7 @@ def test_parse_md1500_poses(tmp_path):
 # Matching pipeline (_match_pairs)
 # --------------------------------------------------------------------------- #
 def _bare_matcher_benchmark():
+    """Build a bare Benchmark instance with the attributes _match_pairs reads."""
     b = Benchmark.__new__(Benchmark)
     b.matcher_params = {"min_score": -1.0}
     b.device = "cpu"
@@ -73,11 +77,13 @@ def _bare_matcher_benchmark():
 
 
 def _eye_intrinsics():
+    """Return identity intrinsics, rotation, and zero translation for a pair."""
     K = np.eye(3)
     return K.copy(), K.copy(), np.eye(3), np.zeros((3, 1))
 
 
 def test_match_pairs_produces_expected_record():
+    """_match_pairs emits a record with the expected keys and match count."""
     b = _bare_matcher_benchmark()
     # Identical descriptors -> every keypoint mutually matches its counterpart.
     des = torch.eye(3)
@@ -98,6 +104,7 @@ def test_match_pairs_produces_expected_record():
 
 
 def test_match_pairs_skips_dropped_image_instead_of_crashing(caplog):
+    """_match_pairs skips pairs with a missing image and logs a warning."""
     b = _bare_matcher_benchmark()
     des = torch.eye(2)
     kpts = torch.tensor([[1.0, 1.0], [2.0, 2.0]])
@@ -118,6 +125,7 @@ def test_match_pairs_skips_dropped_image_instead_of_crashing(caplog):
 # Pose-estimation path (batch_pose_estimation)
 # --------------------------------------------------------------------------- #
 def test_batch_pose_estimation_one_result_per_pair_and_restores_env(monkeypatch):
+    """batch_pose_estimation yields one result per pair and restores CUDA env."""
     import os
 
     b = Benchmark.__new__(Benchmark)

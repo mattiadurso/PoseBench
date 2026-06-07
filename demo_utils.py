@@ -1,3 +1,5 @@
+"""Geometry and plotting helpers for the demo notebook (matches, epipolar lines)."""
+
 import time
 from copy import deepcopy
 from typing import Union

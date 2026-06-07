@@ -16,6 +16,7 @@ FAILURE_RESULT = ("a.png", "b.png", 180, 180, 180, 0)
 
 
 def _intrinsics():
+    """Return a pair of identical synthetic camera intrinsic matrices."""
     K = np.array([[500.0, 0.0, 320.0], [0.0, 500.0, 240.0], [0.0, 0.0, 1.0]])
     return K.copy(), K.copy()
 
@@ -33,17 +34,20 @@ def _pair_data(n_matches):
 
 
 def test_estimate_pose_returns_none_for_too_few_points():
+    """estimate_pose returns None when given fewer than the required points."""
     K1, K2 = _intrinsics()
     pts = np.zeros((3, 2))  # fewer than the 5 the essential matrix needs
     assert estimate_pose(pts, pts, K1, K2, norm_thresh=1.0) is None
 
 
 def test_too_few_matches_returns_failure_sentinel():
+    """Too few matches yields the 180-degree failure sentinel result."""
     data = _pair_data(n_matches=3)
     assert process_pose_estimation(data, th=0.5) == FAILURE_RESULT
 
 
 def test_none_pose_handled_explicitly_not_via_exception(monkeypatch, caplog):
+    """A None pose returns the sentinel and is logged at WARNING, not swallowed."""
     # estimate_pose can legitimately return None (degenerate geometry).
     # The caller must handle that explicitly and log it, not crash-then-swallow.
     monkeypatch.setattr(utils_benchmark, "estimate_pose", lambda *a, **k: None)
@@ -57,7 +61,9 @@ def test_none_pose_handled_explicitly_not_via_exception(monkeypatch, caplog):
 
 
 def test_unexpected_exception_is_logged_at_warning(monkeypatch, caplog):
+    """An unexpected exception returns the sentinel and surfaces at WARNING level."""
     def _boom(*a, **k):
+        """Raise a synthetic error to simulate an unexpected pose-estimation failure."""
         raise RuntimeError("synthetic failure")
 
     monkeypatch.setattr(utils_benchmark, "estimate_pose", _boom)
@@ -71,6 +77,7 @@ def test_unexpected_exception_is_logged_at_warning(monkeypatch, caplog):
 
 
 def test_summarize_reports_failed_pair_count(caplog):
+    """Pose-result aggregation counts and logs the number of failed/unregistered pairs."""
     # Aggregation must count and surface how many pairs failed.
     from benchmarks_2D.benchmark_parallel import Benchmark
 

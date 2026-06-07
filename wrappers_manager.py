@@ -1,3 +1,5 @@
+"""Factory that maps a wrapper-name string to an instantiated method wrapper."""
+
 import importlib
 import sys
 from pathlib import Path
@@ -60,6 +62,7 @@ def _build_wrapper(name, device):
 
 
 def wrappers_manager(name, device="cpu"):
+    """Build the wrapper for ``name`` on ``device`` and set its ``.name`` attribute."""
     print(f"Creating wrapper for {name} on device {device}.\n")
     wrapper = _build_wrapper(name, device)
     wrapper.name = name

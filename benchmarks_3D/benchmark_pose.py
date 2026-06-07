@@ -1,3 +1,5 @@
+"""3D scene pose-estimation benchmark comparing COLMAP reconstructions."""
+
 from __future__ import annotations
 
 import os

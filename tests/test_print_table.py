@@ -29,6 +29,7 @@ GOLDEN_B = [
 
 
 def test_print_table_default_formatting(capsys):
+    """print_table renders the golden table with widths, clipping, and float format."""
     print_table(
         ROWS,
         min_widths={"Method": 8},
@@ -40,10 +41,12 @@ def test_print_table_default_formatting(capsys):
 
 
 def test_print_table_forced_align_no_header(capsys):
+    """print_table honors column selection, forced right-align, and header suppression."""
     print_table(ROWS, columns=["Method", "n"], right_align={"Method"}, header=False)
     assert capsys.readouterr().out.splitlines() == GOLDEN_B
 
 
 def test_print_table_empty(capsys):
+    """print_table prints "(empty)" when given no rows."""
     print_table([])
     assert capsys.readouterr().out.strip() == "(empty)"

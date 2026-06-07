@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+"""Run each benchmark command end-to-end and log wall-clock timings to a CSV."""
+
 import subprocess
 import time
 import csv

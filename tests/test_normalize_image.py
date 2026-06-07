@@ -13,17 +13,21 @@ class _BareWrapper(MethodWrapper):
     """Minimal concrete wrapper that skips model setup, for pure-method tests."""
 
     def __init__(self):
+        """Skip the base model setup so the wrapper can be instantiated bare."""
         pass
 
     def _extract(self, img, max_kpts, custom_kpts=None) -> MethodOutput:
+        """Unused abstract-method stub; never called by these tests."""
         raise NotImplementedError
 
 
 def normalize_image(_self_ignored, *args, **kwargs):
+    """Call MethodWrapper.normalize_image via a bare wrapper instance."""
     return _BareWrapper().normalize_image(*args, **kwargs)
 
 
 def _fixed_inputs():
+    """Build fixed-seed CHW, HWC, and NCHW image tensors for the golden checks."""
     torch.manual_seed(0)
     return {
         "chw": torch.rand(3, 4, 5),
@@ -33,6 +37,7 @@ def _fixed_inputs():
 
 
 def test_normalize_image_golden():
+    """normalize_image yields golden shapes and sums across layouts and norm options."""
     x = _fixed_inputs()
     gray = normalize_image(None, x["chw"])
     assert tuple(gray.shape) == (1, 4, 5)

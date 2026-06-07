@@ -1,3 +1,5 @@
+"""Helpers for the 2D benchmarks: pose I/O, pose estimation/error, and table printing."""
+
 import cv2
 import h5py
 import torch
@@ -30,6 +32,7 @@ logger = logging.getLogger(__name__)
 
 
 def fake_tqdm(x: Any, **kwargs: Any) -> Any:
+    """No-op tqdm fallback: return the iterable unchanged when tqdm is unavailable."""
     return x
 
 
@@ -72,6 +75,7 @@ def load_depth(
 
 
 def parse_md1500_poses(poses_file: Union[str, Path]) -> dict:
+    """Parse a MegaDepth1500-style views file into a per-image dict of K, R, t, P, etc."""
     with open(poses_file, "r") as f:
         lines = f.readlines()
 
@@ -179,6 +183,7 @@ def process_pose_estimation(
 
 
 def str2bool(v: Union[str, bool]) -> bool:
+    """Parse a CLI string into a bool; raise argparse error on unrecognized values."""
     if isinstance(v, bool):
         return v
     if v.lower() in ("yes", "true", "t", "y", "1"):
@@ -495,6 +500,7 @@ def print_table(
     widths = _column_widths(rows, cols, min_widths, float_format, fill_missing)
 
     def render(value: object, col: str) -> str:
+        """Format, clip, and align a single cell value for column ``col``."""
         s = _clip(_format_cell(value, float_format), clip_widths.get(col))
         return _align(s, col, widths[col], left_align, right_align, numeric_cols)
 

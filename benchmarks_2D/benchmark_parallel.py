@@ -1,3 +1,5 @@
+"""Parallel 2D pose-estimation benchmark driver for sparse/dense feature methods."""
+
 # This code is based on Parskatt implementation in DKM and DeDoDe.
 
 import os
@@ -51,6 +53,8 @@ except ImportError:
 
 
 class Benchmark:
+    """Runs a 2D matching benchmark: feature extraction, matching, and pose estimation."""
+
     def __init__(
         self,
         benchmark_name: str,
@@ -69,6 +73,7 @@ class Benchmark:
         oom_safe: bool = False,
         px_thrs: list = [1, 3, 5],
     ):
+        """Store benchmark configuration and load pairs, paths, and any cached features."""
         self.benchmark_name = benchmark_name
         self.dataset_path = dataset_path
         self.ransac_th = ransac_th
