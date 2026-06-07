@@ -8,9 +8,14 @@ import numpy as np
 import pandas as pd
 from torch import Tensor
 from pathlib import Path
-from typing import Tuple, Dict, List
+from typing import Tuple, Dict, List, Optional, Union
 from joblib import Parallel, delayed
 from concurrent.futures import ThreadPoolExecutor
+
+from common.geometry import filter_outside
+from common.serialization import (  # noqa: F401  re-exported for hpatches_benchmark
+    convert_numpy_types,
+)
 
 # Setup logging
 logging.basicConfig(level=logging.INFO)
@@ -58,53 +63,6 @@ def load_hpatches_in_memory(wrapper, root: str | Path, max_workers: int = 16) ->
     return hpatches
 
 
-def convert_numpy_types(obj):
-    """Convert numpy types to native Python types for JSON serialization."""
-    if isinstance(obj, np.integer):
-        return int(obj)
-    elif isinstance(obj, np.floating):
-        return float(obj)
-    elif isinstance(obj, np.array):
-        return obj.tolist()
-    elif isinstance(obj, dict):
-        return {key: convert_numpy_types(value) for key, value in obj.items()}
-    elif isinstance(obj, list):
-        return [convert_numpy_types(item) for item in obj]
-    else:
-        return obj
-
-
-def filter_outside(
-    xy: Tensor, shape: tuple[int, int] | Tensor | np.ndarray, border: int = 0
-) -> Tensor:
-    """set as nan all the points that are not inside rectangle defined with shape HxW
-    Args:
-        xy: keypoints with coordinate (x, y)
-            (B)xnx2
-        shape: shape where the keypoints should be contained (H, W)
-            2
-        border: the minimum border to apply when masking
-    Returns:
-        Tensor: input keypoints with 'nan' where one of the two coordinates was not contained inside shape
-        xy_filtered     (B)xnx2
-    """
-    assert xy.shape[-1] == 2, f"xy must have last dimension of size 2, got {xy.shape}"
-    assert len(shape) == 2, f"shape must be a tuple of 2 elements, got {shape}"
-    assert border < max(
-        shape
-    ), f"border must be smaller than the smallest shape dimension, got {border} and {shape}"
-
-    xy = xy.clone()
-    outside_mask = (
-        (xy[..., 0] < border)
-        + (xy[..., 0] >= shape[1] - border)
-        + (xy[..., 1] < border)
-        + (xy[..., 1] >= shape[0] - border)
-    )  # (B)xn
-    xy[outside_mask] = float("nan")
-    return xy
-
-
 def warp_points(
     xy: torch.Tensor,
     H: torch.Tensor,
@@ -145,7 +103,7 @@ def warp_points(
     H_b = H[None, ...] if single_H else H  # (B?,3,3)
 
     # Broadcast batch if one side has B=1
-    B_xy, N = xy_b.shape[0], xy_b.shape[1]
+    B_xy = xy_b.shape[0]
     B_H = H_b.shape[0]
     if B_xy != B_H:
         if B_xy == 1:
@@ -213,9 +171,7 @@ def compute_homography_corner_error(
             [img0_shape[1], 0.0],
         ],
         device=device,
-    )[None, :, :].repeat(
-        B, 1, 1
-    )  # B,4,2
+    )[None, :, :].repeat(B, 1, 1)  # B,4,2
 
     # ? compute the corner error in the projected frame
     projected_corners0_GT = warp_points(corners0, H0_1_GT.to(torch.double))  # B,4,2
@@ -230,9 +186,7 @@ def compute_homography_corner_error(
                 [img1_shape[1], 0.0],
             ],
             device=device,
-        )[None, :, :].repeat(
-            B, 1, 1
-        )  # B,4,2
+        )[None, :, :].repeat(B, 1, 1)  # B,4,2
         # ? compute the corner error in the projected frame
         projected_corners1_GT = warp_points(
             corners1, torch.inverse(H0_1_GT.to(torch.double))
@@ -246,6 +200,64 @@ def compute_homography_corner_error(
         corner_error = 0.5 * (corner_error + corner_error_1)  # B
 
     return corner_error
+
+
+def _invalid_corner_row(thr, n_matches, device):
+    """Build the corner-error row used when no valid homography is available."""
+    return {
+        "valid_homography": False,
+        "ransac_thr": float(thr),
+        "corner_error": float("inf"),
+        "homography": torch.ones((3, 3), device=device) * float("nan"),
+        "mask": torch.zeros(n_matches, dtype=torch.bool, device=device),
+        "n_matched_keypoints": n_matches,
+        "n_ransac_inliers": 0,
+    }
+
+
+def _solve_corner_homography(
+    thr,
+    xy0_np,
+    xy1_np,
+    H_gt,
+    img0_shape,
+    img1_shape,
+    mode,
+    n_matches,
+    ransac_max_iters,
+    device,
+):
+    """RANSAC one homography at ``thr`` and return its corner-error result row."""
+    H_est, mask = cv2.findHomography(
+        xy0_np,
+        xy1_np,
+        method=cv2.RANSAC,
+        ransacReprojThreshold=float(thr),
+        maxIters=int(ransac_max_iters),
+        confidence=0.999999,
+    )
+    if H_est is None:
+        return _invalid_corner_row(thr, n_matches, device)
+
+    # Corner error between GT and estimated H
+    H_est_t = torch.as_tensor(H_est, dtype=torch.float32, device=device)
+    ce = compute_homography_corner_error(
+        H_gt[None, ...],
+        H_est_t[None, ...],
+        img0_shape,
+        img1_shape if mode == "symmetric" else None,
+    )[0].item()
+
+    mask_bool = torch.as_tensor(mask.reshape(-1).astype(bool), device=device)
+    return {
+        "valid_homography": True,
+        "ransac_thr": float(thr),
+        "corner_error": float(ce),
+        "homography": H_est,  # keep as numpy for JSON friendliness
+        "mask": mask_bool,
+        "n_matched_keypoints": n_matches,
+        "n_ransac_inliers": int(mask_bool.sum().item()),
+    }
 
 
 def compute_corner_error(
@@ -280,64 +292,28 @@ def compute_corner_error(
 
     # Not enough points
     if n_matches < 4:
-        out = []
-        for thr in ransac_homography_threshold:
-            out.append(
-                {
-                    "valid_homography": False,
-                    "ransac_thr": thr,
-                    "corner_error": float("inf"),
-                    "homography": torch.ones((3, 3), device=device) * float("nan"),
-                    "mask": torch.zeros(n_matches, dtype=torch.bool, device=device),
-                    "n_matched_keypoints": n_matches,
-                    "n_ransac_inliers": 0,
-                }
-            )
-        return out
+        return [
+            _invalid_corner_row(thr, n_matches, device)
+            for thr in ransac_homography_threshold
+        ]
 
     xy0_np = xy0_matched.detach().cpu().numpy()
     xy1_np = xy1_matched.detach().cpu().numpy()
     H_gt = H0_1.detach()
 
     def _solve_one(thr: float):
-        H_est, mask = cv2.findHomography(
+        return _solve_corner_homography(
+            thr,
             xy0_np,
             xy1_np,
-            method=cv2.RANSAC,
-            ransacReprojThreshold=float(thr),
-            maxIters=int(ransac_max_iters),
-            confidence=0.999999,
-        )
-        if H_est is None:
-            return {
-                "valid_homography": False,
-                "ransac_thr": float(thr),
-                "corner_error": float("inf"),
-                "homography": torch.ones((3, 3), device=device) * float("nan"),
-                "mask": torch.zeros(n_matches, dtype=torch.bool, device=device),
-                "n_matched_keypoints": n_matches,
-                "n_ransac_inliers": 0,
-            }
-
-        # Corner error between GT and estimated H
-        H_est_t = torch.as_tensor(H_est, dtype=torch.float32, device=device)
-        ce = compute_homography_corner_error(
-            H_gt[None, ...],
-            H_est_t[None, ...],
+            H_gt,
             img0_shape,
-            img1_shape if mode == "symmetric" else None,
-        )[0].item()
-
-        mask_bool = torch.as_tensor(mask.reshape(-1).astype(bool), device=device)
-        return {
-            "valid_homography": True,
-            "ransac_thr": float(thr),
-            "corner_error": float(ce),
-            "homography": H_est,  # keep as numpy for JSON friendliness
-            "mask": mask_bool,
-            "n_matched_keypoints": n_matches,
-            "n_ransac_inliers": int(mask_bool.sum().item()),
-        }
+            img1_shape,
+            mode,
+            n_matches,
+            ransac_max_iters,
+            device,
+        )
 
     # Parallel across thresholds
     os.environ["CUDA_VISIBLE_DEVICES"] = ""
@@ -367,12 +343,12 @@ def find_distance_matrices_between_points_and_their_projections(
             n0,n1
     """
 
-    assert (
-        xy0.ndim == 2 and xy1.ndim == 2
-    ), f"xy0 and xy1 must be 2D tensors, got {xy0.ndim} and {xy1.ndim}"
-    assert (
-        xy0_proj.ndim == 2 and xy1_proj.ndim == 2
-    ), f"xy0_proj and xy1_proj must be 2D tensors, got {xy0_proj.ndim} and {xy1_proj.ndim}"
+    assert xy0.ndim == 2 and xy1.ndim == 2, (
+        f"xy0 and xy1 must be 2D tensors, got {xy0.ndim} and {xy1.ndim}"
+    )
+    assert xy0_proj.ndim == 2 and xy1_proj.ndim == 2, (
+        f"xy0_proj and xy1_proj must be 2D tensors, got {xy0_proj.ndim} and {xy1_proj.ndim}"
+    )
 
     # ? compute the distance between all the reprojected points
     # # ? low memory usage, slow but correct
@@ -399,12 +375,12 @@ def compute_coverages(
     px_thrs: float | list[float],
     coverage_kernel_size: int,
 ) -> Tuple[float, float] | Tuple[Tensor, Tensor]:
-    assert (
-        xy0.ndim == 2 and xy1.ndim == 2
-    ), f"xy0 and xy1 must be 2D tensors, got {xy0.shape} and {xy1.shape}"
-    assert (
-        xy0_proj.ndim == 2 and xy1_proj.ndim == 2
-    ), f"xy0_proj and xy1_proj must be 2D tensors, got {xy0_proj.shape} and {xy1_proj.shape}"
+    assert xy0.ndim == 2 and xy1.ndim == 2, (
+        f"xy0 and xy1 must be 2D tensors, got {xy0.shape} and {xy1.shape}"
+    )
+    assert xy0_proj.ndim == 2 and xy1_proj.ndim == 2, (
+        f"xy0_proj and xy1_proj must be 2D tensors, got {xy0_proj.shape} and {xy1_proj.shape}"
+    )
     device = xy0.device
 
     # ? number of keypoints that are in the overlap area
@@ -531,6 +507,73 @@ def _inside(shape_hw, xy: torch.Tensor) -> torch.Tensor:
     return (x >= 0) & (y >= 0) & (x < w) & (y < h)
 
 
+def _overlap_cdist(src_w_vis, dst, n_overlap, device):
+    """Pairwise distances from warped-visible source points to dst (empty-safe)."""
+    if n_overlap and dst.shape[0]:
+        return torch.cdist(src_w_vis, dst, p=2)
+    return torch.empty((n_overlap, dst.shape[0]), dtype=torch.float32, device=device)
+
+
+def _match_errors(matches, xy0, xy1, H0_1, H1_0, device):
+    """Symmetric (max of both directions) reprojection error per proposed match."""
+    if not matches.numel():
+        return torch.zeros((0,), dtype=torch.float32, device=device)
+
+    i0 = matches[:, 0].clamp(min=0, max=max(0, xy0.shape[0] - 1))
+    i1 = matches[:, 1].clamp(min=0, max=max(0, xy1.shape[0] - 1))
+    xy0_m = xy0[i0]
+    xy1_m = xy1[i1]
+    xy0_m_w = warp_points(xy0_m, H0_1)
+    xy1_m_w = warp_points(xy1_m, H1_0)
+    err_0to1 = (
+        torch.linalg.norm(xy0_m_w - xy1_m, dim=1)
+        if xy1_m.shape[0]
+        else torch.zeros(0, device=device)
+    )
+    err_1to0 = (
+        torch.linalg.norm(xy1_m_w - xy0_m, dim=1)
+        if xy0_m.shape[0]
+        else torch.zeros(0, device=device)
+    )
+    return torch.maximum(err_0to1, err_1to0)
+
+
+def _coverage_rows(compute_coverage, n_xy0_overlap, n_xy1_overlap, xy0, xy1):
+    """Mean overlap-coverage row (empty list when coverage is disabled)."""
+    if not compute_coverage:
+        return []
+    cov0 = float(n_xy0_overlap) / float(max(1, xy0.shape[0]))
+    cov1 = float(n_xy1_overlap) / float(max(1, xy1.shape[0]))
+    cov = 0.5 * (cov0 + cov1)
+    cov_pk = 0.5 * (
+        _safe_div(n_xy0_overlap, xy0.shape[0]) + _safe_div(n_xy1_overlap, xy1.shape[0])
+    )
+    return [{"coverage": cov, "coverage_per_kpt": cov_pk}]
+
+
+def _overlap_geometry(xy0, xy1, H0_1, H1_0, img0_shape, img1_shape, device):
+    """Warp keypoints across the GT homography and return overlap distances.
+
+    Returns:
+        (d01, d10, n_xy0_overlap, n_xy1_overlap): distances from each image's
+        warped-visible keypoints to the other's keypoints, plus overlap counts.
+    """
+    xy0_w = warp_points(xy0, H0_1)
+    xy1_w = warp_points(xy1, H1_0)
+
+    m0 = _inside(img1_shape, xy0_w)
+    m1 = _inside(img0_shape, xy1_w)
+    xy0_w_vis = xy0_w[m0]
+    xy1_w_vis = xy1_w[m1]
+
+    n_xy0_overlap = int(m0.sum().item())
+    n_xy1_overlap = int(m1.sum().item())
+
+    d01 = _overlap_cdist(xy0_w_vis, xy1, n_xy0_overlap, device)
+    d10 = _overlap_cdist(xy1_w_vis, xy0, n_xy1_overlap, device)
+    return d01, d10, n_xy0_overlap, n_xy1_overlap
+
+
 def compute_matching_stats_homography(
     xy0,
     xy1,
@@ -555,77 +598,63 @@ def compute_matching_stats_homography(
     H1_0 = torch.inverse(H0_1)
     matches = _as_long2(matches, device)
 
-    xy0_w = warp_points(xy0, H0_1)
-    xy1_w = warp_points(xy1, H1_0)
-
-    m0 = _inside(img1_shape, xy0_w)
-    m1 = _inside(img0_shape, xy1_w)
-
-    # xy0_vis = xy0[m0]
-    # xy1_vis = xy1[m1]
-    xy0_w_vis = xy0_w[m0]
-    xy1_w_vis = xy1_w[m1]
-
-    n_xy0_overlap = int(m0.sum().item())
-    n_xy1_overlap = int(m1.sum().item())
-
-    d01 = (
-        torch.cdist(xy0_w_vis, xy1, p=2)
-        if n_xy0_overlap and xy1.shape[0]
-        else torch.empty(
-            (n_xy0_overlap, xy1.shape[0]), dtype=torch.float32, device=device
-        )
-    )
-    d10 = (
-        torch.cdist(xy1_w_vis, xy0, p=2)
-        if n_xy1_overlap and xy0.shape[0]
-        else torch.empty(
-            (n_xy1_overlap, xy0.shape[0]), dtype=torch.float32, device=device
-        )
+    d01, d10, n_xy0_overlap, n_xy1_overlap = _overlap_geometry(
+        xy0, xy1, H0_1, H1_0, img0_shape, img1_shape, device
     )
 
-    if matches.numel():
-        i0 = matches[:, 0].clamp(min=0, max=max(0, xy0.shape[0] - 1))
-        i1 = matches[:, 1].clamp(min=0, max=max(0, xy1.shape[0] - 1))
-        xy0_m = xy0[i0]
-        xy1_m = xy1[i1]
-        xy0_m_w = warp_points(xy0_m, H0_1)
-        xy1_m_w = warp_points(xy1_m, H1_0)
-        err_0to1 = (
-            torch.linalg.norm(xy0_m_w - xy1_m, dim=1)
-            if xy1_m.shape[0]
-            else torch.zeros(0, device=device)
-        )
-        err_1to0 = (
-            torch.linalg.norm(xy1_m_w - xy0_m, dim=1)
-            if xy0_m.shape[0]
-            else torch.zeros(0, device=device)
-        )
-        match_err = torch.maximum(err_0to1, err_1to0)
-    else:
-        match_err = torch.zeros((0,), dtype=torch.float32, device=device)
+    match_err = _match_errors(matches, xy0, xy1, H0_1, H1_0, device)
+    list_cov = _coverage_rows(compute_coverage, n_xy0_overlap, n_xy1_overlap, xy0, xy1)
 
-    list_cov = []
-    if compute_coverage:
-        cov0 = float(n_xy0_overlap) / float(max(1, xy0.shape[0]))
-        cov1 = float(n_xy1_overlap) / float(max(1, xy1.shape[0]))
-        cov = 0.5 * (cov0 + cov1)
-        cov_pk = 0.5 * (
-            _safe_div(n_xy0_overlap, xy0.shape[0])
-            + _safe_div(n_xy1_overlap, xy1.shape[0])
-        )
-        list_cov.append({"coverage": cov, "coverage_per_kpt": cov_pk})
+    list_stats = _homography_threshold_rows(
+        px_thrs,
+        d01,
+        d10,
+        match_err,
+        n_xy0_overlap,
+        n_xy1_overlap,
+        list_cov,
+        compute_coverage,
+        device,
+    )
+    list_hstats = _homography_eval_rows(
+        matches,
+        xy0,
+        xy1,
+        H0_1,
+        img0_shape,
+        img1_shape,
+        mode,
+        ransac_thresholds,
+        px_thrs,
+        evaluate_corner_error,
+    )
+    return list_stats, list_hstats, list_cov
 
+
+def _homography_threshold_rows(
+    px_thrs,
+    d01,
+    d10,
+    match_err,
+    n_xy0_overlap,
+    n_xy1_overlap,
+    list_cov,
+    compute_coverage,
+    device,
+):
+    """Per-threshold repeatability / accuracy / precision / recall rows."""
     list_stats = []
     for px_thr in px_thrs:
-        if d01.numel():
-            rep0 = (d01.min(dim=1).values <= px_thr).float().mean().item()
-        else:
-            rep0 = 0.0
-        if d10.numel():
-            rep1 = (d10.min(dim=1).values <= px_thr).float().mean().item()
-        else:
-            rep1 = 0.0
+        rep0 = (
+            (d01.min(dim=1).values <= px_thr).float().mean().item()
+            if d01.numel()
+            else 0.0
+        )
+        rep1 = (
+            (d10.min(dim=1).values <= px_thr).float().mean().item()
+            if d10.numel()
+            else 0.0
+        )
         repeatability = 0.5 * (rep0 + rep1)
 
         n_prop = int(match_err.numel())
@@ -644,21 +673,18 @@ def compute_matching_stats_homography(
         )
         n_gt_corr = 0.5 * (n_gt0 + n_gt1)
 
-        matching_accuracy = _safe_div(n_good, n_prop)
         matching_score = 0.5 * (
             _safe_div(n_good, n_xy0_overlap) + _safe_div(n_good, n_xy1_overlap)
         )
-        precision = _safe_div(n_good, n_prop)
-        recall = _safe_div(n_good, n_gt_corr)
 
         row = {
             "thr": float(px_thr),
             "repeatability": float(repeatability),
             "repeatability_mnn": float(repeatability),
-            "matching_accuracy": float(matching_accuracy),
+            "matching_accuracy": float(_safe_div(n_good, n_prop)),
             "matching_score": float(matching_score),
-            "precision": float(precision),
-            "recall": float(recall),
+            "precision": float(_safe_div(n_good, n_prop)),
+            "recall": float(_safe_div(n_good, n_gt_corr)),
             "n_matches_proposed": float(n_prop),
             "n_inliers_nn_GT": float(n_good),
         }
@@ -666,52 +692,189 @@ def compute_matching_stats_homography(
             row["coverage"] = float(list_cov[0]["coverage"])
             row["coverage_per_kpt"] = float(list_cov[0]["coverage_per_kpt"])
         list_stats.append(row)
+    return list_stats
 
-    # ---- Homography evaluation (fills list_hstats) ----
+
+def _homography_eval_rows(
+    matches,
+    xy0,
+    xy1,
+    H0_1,
+    img0_shape,
+    img1_shape,
+    mode,
+    ransac_thresholds,
+    px_thrs,
+    evaluate_corner_error,
+):
+    """RANSAC homography corner-error rows (fills list_hstats)."""
     list_hstats = []
-    if evaluate_corner_error:
-        # Use custom RANSAC thresholds if provided, otherwise use px_thrs
-        if ransac_thresholds is None:
-            ransac_thresholds = [0.125, 0.5, 0.75, 1, 1.5, 2, 2.5, 3]
+    if not evaluate_corner_error:
+        return list_hstats
 
-        if matches.numel() >= 8:
-            i0 = matches[:, 0].clamp(min=0, max=max(0, xy0.shape[0] - 1))
-            i1 = matches[:, 1].clamp(min=0, max=max(0, xy1.shape[0] - 1))
-            xy0_matched = xy0[i0]
-            xy1_matched = xy1[i1]
-            ce_list = compute_corner_error(
-                xy0_matched=xy0_matched,
-                xy1_matched=xy1_matched,
-                H0_1=H0_1,
-                img0_shape=img0_shape,
-                img1_shape=img1_shape,
-                mode=mode,
-                ransac_homography_threshold=ransac_thresholds,
-                ransac_max_iters=10_000,
-                njobs=1,
+    # Use custom RANSAC thresholds if provided, otherwise a default set.
+    if ransac_thresholds is None:
+        ransac_thresholds = [0.125, 0.5, 0.75, 1, 1.5, 2, 2.5, 3]
+
+    if matches.numel() >= 8:
+        i0 = matches[:, 0].clamp(min=0, max=max(0, xy0.shape[0] - 1))
+        i1 = matches[:, 1].clamp(min=0, max=max(0, xy1.shape[0] - 1))
+        ce_list = compute_corner_error(
+            xy0_matched=xy0[i0],
+            xy1_matched=xy1[i1],
+            H0_1=H0_1,
+            img0_shape=img0_shape,
+            img1_shape=img1_shape,
+            mode=mode,
+            ransac_homography_threshold=ransac_thresholds,
+            ransac_max_iters=10_000,
+            njobs=1,
+        )
+        for ce in ce_list:
+            list_hstats.append(
+                {
+                    "ransac_thr": float(ce["ransac_thr"]),
+                    "corner_error": float(ce["corner_error"]),
+                    "valid_homography": bool(ce["valid_homography"]),
+                    "n_ransac_inliers": int(ce["n_ransac_inliers"]),
+                }
             )
-            for ce in ce_list:
-                list_hstats.append(
-                    {
-                        "ransac_thr": float(ce["ransac_thr"]),
-                        "corner_error": float(ce["corner_error"]),
-                        "valid_homography": bool(ce["valid_homography"]),
-                        "n_ransac_inliers": int(ce["n_ransac_inliers"]),
-                    }
-                )
-        else:
-            # If not enough matches, use px_thrs for consistency in output
-            for thr in px_thrs:
-                list_hstats.append(
-                    {
-                        "ransac_thr": float(thr),
-                        "corner_error": float("inf"),
-                        "valid_homography": False,
-                        "n_ransac_inliers": 0,
-                    }
-                )
+    else:
+        # If not enough matches, use px_thrs for consistency in output
+        for thr in px_thrs:
+            list_hstats.append(
+                {
+                    "ransac_thr": float(thr),
+                    "corner_error": float("inf"),
+                    "valid_homography": False,
+                    "n_ransac_inliers": 0,
+                }
+            )
+    return list_hstats
 
-    return list_stats, list_hstats, list_cov
+
+_HPATCHES_METRIC_NAMES = [
+    "repeatability",
+    "repeatability_mnn",
+    "n_keypoints",
+    "coverage",
+    "coverage_per_kpt",
+    "matching_accuracy",
+    "matching_score",
+    "precision",
+    "recall",
+    "n_matches_proposed",
+    "n_inliers_nn_GT",
+]
+
+
+def _compute_one_pair_stats(
+    folder_name, j, hpatches, keypoints, matches, max_kpts, px_thrs, ransac_thresholds
+):
+    """Evaluate a single (sequence, pair) and return ``(stats_df, homography_df)``."""
+    imgs = hpatches[folder_name]["imgs"]
+    homs = hpatches[folder_name]["homs"]
+
+    img0_shape = imgs[0].shape[-2:]
+    img1_shape = imgs[j].shape[-2:]
+    H01 = torch.as_tensor(homs[j], dtype=torch.float32)
+
+    xy0 = keypoints[folder_name][0]
+    xy1 = keypoints[folder_name][j]
+    if max_kpts < 999_999:
+        xy0 = xy0[:max_kpts]
+        xy1 = xy1[:max_kpts]
+
+    pair_key = f"1_{j + 1}"
+    m01 = matches.get(folder_name, {}).get(pair_key, None)
+
+    # Inner call MUST be single-threaded to avoid oversubscription
+    list_stats, list_hstats, _ = compute_matching_stats_homography(
+        xy0=xy0,
+        xy1=xy1,
+        H0_1=H01,
+        img0_shape=img0_shape,
+        img1_shape=img1_shape,
+        mode="hpatches",
+        matches=m01,
+        px_thrs=px_thrs,
+        ransac_thresholds=ransac_thresholds,
+        compute_coverage=True,
+        coverage_kernel_size=9,
+        evaluate_corner_error=True,
+        evaluate_corner_error_keypoints=False,
+        device="cpu",
+        njobs=1,
+    )
+
+    sdf = pd.DataFrame(list_stats)
+    hdf = pd.DataFrame(list_hstats)
+
+    # Annotate with metadata
+    seq_type = folder_name[0] if folder_name else "?"
+    pair_name = f"1-{j + 1}"
+    n_kpts = 0.5 * (len(xy0) + len(xy1))
+    for df in (sdf, hdf):
+        if len(df):
+            df["type"] = seq_type
+            df["scene"] = folder_name
+            df["pair"] = pair_name
+            df["n_keypoints"] = n_kpts
+
+    return sdf, hdf
+
+
+def _aggregate_matching_stats(stats_df):
+    """Mean/median of matching metrics by (thr, type), with an 'overall' partition."""
+    if len(stats_df):
+        stats_df_overall = stats_df.copy()
+        stats_df_overall["type"] = "overall"
+        stats_df_aug = pd.concat([stats_df, stats_df_overall], ignore_index=True)
+    else:
+        stats_df_aug = stats_df.copy()
+
+    if not len(stats_df_aug):
+        return pd.DataFrame()
+
+    mean_renaming = {n: f"mean_{n}" for n in _HPATCHES_METRIC_NAMES}
+    median_renaming = {n: f"median_{n}" for n in _HPATCHES_METRIC_NAMES}
+    numeric_cols = stats_df_aug.select_dtypes(include="number").columns
+    mean_stats_df = stats_df_aug.groupby(["thr", "type"], as_index=False)[
+        numeric_cols
+    ].mean()
+    mean_stats_df.rename(columns=mean_renaming, inplace=True)
+    median_stats_df = stats_df_aug.groupby(["thr", "type"], as_index=False)[
+        numeric_cols
+    ].median()
+    median_stats_df.rename(columns=median_renaming, inplace=True)
+    return pd.merge(mean_stats_df, median_stats_df, how="outer")
+
+
+def _aggregate_homography_accuracy(stats_homography_df):
+    """Homography-accuracy proportions per (ransac_thr, type) across accuracy thresholds."""
+    if not len(stats_homography_df):
+        return pd.DataFrame(
+            columns=["ransac_thr", "type", "homography_accuracy", "accuracy_thr"]
+        )
+
+    stats_h_overall = stats_homography_df.copy()
+    stats_h_overall["type"] = "overall"
+    stats_h_aug = pd.concat([stats_homography_df, stats_h_overall], ignore_index=True)
+
+    aggregated = pd.DataFrame()
+    homography_accuracy_thrs = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0]
+    for acc_thr in homography_accuracy_thrs:
+        tmp = stats_h_aug.copy()
+        # Boolean then mean() -> proportion
+        tmp["homography_accuracy"] = tmp["corner_error"] <= acc_thr
+        stats_at_thr = (
+            tmp.groupby(["ransac_thr", "type"])["homography_accuracy"]
+            .mean()
+            .reset_index()
+        )
+        stats_at_thr["accuracy_thr"] = float(acc_thr)
+        aggregated = pd.concat([aggregated, stats_at_thr], ignore_index=True)
+    return aggregated
 
 
 def compute_matching_stats(
@@ -738,69 +901,12 @@ def compute_matching_stats(
         for j in range(1, min(6, len(pack["imgs"]))):
             work.append((folder_name, j))
 
-    def _compute_one_pair(folder_name: str, j: int):
-        imgs = hpatches[folder_name]["imgs"]
-        homs = hpatches[folder_name]["homs"]
-
-        img0_shape = imgs[0].shape[-2:]
-        img1_shape = imgs[j].shape[-2:]
-        H01 = torch.as_tensor(homs[j], dtype=torch.float32)
-
-        xy0 = keypoints[folder_name][0]
-        xy1 = keypoints[folder_name][j]
-        if max_kpts < 999_999:
-            xy0 = xy0[:max_kpts]
-            xy1 = xy1[:max_kpts]
-
-        pair_key = f"1_{j+1}"
-        m01 = matches.get(folder_name, {}).get(pair_key, None)
-
-        # Inner call MUST be single-threaded to avoid oversubscription
-        list_stats, list_hstats, list_cov = compute_matching_stats_homography(
-            xy0=xy0,
-            xy1=xy1,
-            H0_1=H01,
-            img0_shape=img0_shape,
-            img1_shape=img1_shape,
-            mode="hpatches",
-            matches=m01,
-            px_thrs=px_thrs,
-            ransac_thresholds=ransac_thresholds,
-            compute_coverage=True,
-            coverage_kernel_size=9,
-            evaluate_corner_error=True,
-            evaluate_corner_error_keypoints=False,
-            device="cpu",
-            njobs=1,
-        )
-
-        # Turn into DFs
-        sdf = pd.DataFrame(list_stats)
-        hdf = pd.DataFrame(list_hstats)
-
-        # Annotate with metadata
-        seq_type = folder_name[0] if folder_name else "?"
-        pair_name = f"1-{j+1}"
-        n_kpts = 0.5 * (len(xy0) + len(xy1))
-
-        if len(sdf):
-            sdf["type"] = seq_type
-            sdf["scene"] = folder_name
-            sdf["pair"] = pair_name
-            sdf["n_keypoints"] = n_kpts
-
-        if len(hdf):
-            hdf["type"] = seq_type
-            hdf["scene"] = folder_name
-            hdf["pair"] = pair_name
-            hdf["n_keypoints"] = n_kpts
-
-        return sdf, hdf
-
     # Using threads is faster here since each job is lightweight
     os.environ["CUDA_VISIBLE_DEVICES"] = ""
     results = Parallel(n_jobs=njobs, prefer="threads")(
-        delayed(_compute_one_pair)(folder, j)
+        delayed(_compute_one_pair_stats)(
+            folder, j, hpatches, keypoints, matches, max_kpts, px_thrs, ransac_thresholds
+        )
         for (folder, j) in tqdm(work, desc="Computing pairs")
     )
 
@@ -821,84 +927,12 @@ def compute_matching_stats(
         else pd.DataFrame()
     )
 
-    # ---- Aggregations (mirror the original sequential implementation) ----
-    # duplicate stats_df to create an "overall" partition
-    if len(stats_df):
-        stats_df_overall = stats_df.copy()
-        stats_df_overall["type"] = "overall"
-        stats_df_aug = pd.concat([stats_df, stats_df_overall], ignore_index=True)
-    else:
-        stats_df_aug = stats_df.copy()
-
-    # Means & medians grouped by (thr, type)
-    metric_names = [
-        "repeatability",
-        "repeatability_mnn",
-        "n_keypoints",
-        "coverage",
-        "coverage_per_kpt",
-        "matching_accuracy",
-        "matching_score",
-        "precision",
-        "recall",
-        "n_matches_proposed",
-        "n_inliers_nn_GT",
-    ]
-    mean_renaming = {n: f"mean_{n}" for n in metric_names}
-    median_renaming = {n: f"median_{n}" for n in metric_names}
-
-    if len(stats_df_aug):
-        numeric_cols = stats_df_aug.select_dtypes(include="number").columns
-        mean_stats_df = stats_df_aug.groupby(["thr", "type"], as_index=False)[
-            numeric_cols
-        ].mean()
-        mean_stats_df.rename(columns=mean_renaming, inplace=True)
-
-        numeric_cols = stats_df_aug.select_dtypes(include="number").columns
-        median_stats_df = stats_df_aug.groupby(["thr", "type"], as_index=False)[
-            numeric_cols
-        ].median()
-        median_stats_df.rename(columns=median_renaming, inplace=True)
-
-        aggregated_df = pd.merge(mean_stats_df, median_stats_df, how="outer")
-    else:
-        aggregated_df = pd.DataFrame()
-
-    # Homography accuracy aggregation
-    if len(stats_homography_df):
-        # add overall partition
-        stats_h_overall = stats_homography_df.copy()
-        stats_h_overall["type"] = "overall"
-        stats_h_aug = pd.concat(
-            [stats_homography_df, stats_h_overall], ignore_index=True
-        )
-
-        aggregated_homography_accuracy_df = pd.DataFrame()
-        HOMOGRAPHY_ACCURACY_THRS = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0]
-        for acc_thr in HOMOGRAPHY_ACCURACY_THRS:
-            tmp = stats_h_aug.copy()
-            # Boolean then mean() -> proportion
-            tmp["homography_accuracy"] = tmp["corner_error"] <= acc_thr
-            stats_at_thr = (
-                tmp.groupby(["ransac_thr", "type"])["homography_accuracy"]
-                .mean()
-                .reset_index()
-            )
-            stats_at_thr["accuracy_thr"] = float(acc_thr)
-            aggregated_homography_accuracy_df = pd.concat(
-                [aggregated_homography_accuracy_df, stats_at_thr], ignore_index=True
-            )
-    else:
-        aggregated_homography_accuracy_df = pd.DataFrame(
-            columns=["ransac_thr", "type", "homography_accuracy", "accuracy_thr"]
-        )
-
     # Return exactly what hpatches_benchmark.py expects
     return (
         stats_df,
-        aggregated_df,
+        _aggregate_matching_stats(stats_df),
         stats_homography_df,
-        aggregated_homography_accuracy_df,
+        _aggregate_homography_accuracy(stats_homography_df),
     )
 
 
@@ -989,28 +1023,28 @@ def display_hpatches_results_(
             rep_key = f"repeatability_{thr}"
             if rep_key in partition_data:
                 rep_data = partition_data[rep_key]
-                row[f"Rep@{thr}"] = f"{rep_data.get('mean', 0.0)*100:.1f}"
+                row[f"Rep@{thr}"] = f"{rep_data.get('mean', 0.0) * 100:.1f}"
 
         for thr in ths:
             # Matching Accuracy
             ma_key = f"matching_accuracy_{thr}"
             if ma_key in partition_data:
                 ma_data = partition_data[ma_key]
-                row[f"MA@{thr}"] = f"{ma_data.get('mean', 0.0)*100:.1f}"
+                row[f"MA@{thr}"] = f"{ma_data.get('mean', 0.0) * 100:.1f}"
 
         for thr in ths:
             # Matching Score
             ms_key = f"matching_score_{thr}"
             if ms_key in partition_data:
                 ms_data = partition_data[ms_key]
-                row[f"MS@{thr}"] = f"{ms_data.get('mean', 0.0)*100:.1f}"
+                row[f"MS@{thr}"] = f"{ms_data.get('mean', 0.0) * 100:.1f}"
 
         for thr in ths:
             # Homography Accuracy
             ha_key = f"homography_accuracy_{thr}"
             if ha_key in partition_data:
                 ha_data = partition_data[ha_key]
-                row[f"HA@{thr}"] = f"{ha_data.get('mean', 0.0)*100:.1f}"
+                row[f"HA@{thr}"] = f"{ha_data.get('mean', 0.0) * 100:.1f}"
 
         rows.append(row)
 
@@ -1032,9 +1066,81 @@ def display_hpatches_results_(
     return df
 
 
-import json
-from pathlib import Path
-from typing import List, Dict, Optional, Union
+def _detect_repeatability_thresholds(data, partition):
+    """Auto-detect integer thresholds from ``repeatability_*`` keys in the results."""
+    ths_detected: List[int] = []
+    for _, results in data.items():
+        if partition not in results:
+            continue
+        for key in results[partition]:
+            if not key.startswith("repeatability_"):
+                continue
+            try:
+                thr_val = int(float(key.split("_")[-1]))
+            except ValueError:
+                continue
+            if thr_val not in ths_detected:
+                ths_detected.append(thr_val)
+    return sorted(ths_detected) if ths_detected else [1, 2, 3]
+
+
+def _build_hpatches_rows(data, partition, ths):
+    """Build percentage-formatted display rows (one per method)."""
+    metric_specs = [
+        ("Rep", "repeatability"),
+        ("MA", "matching_accuracy"),
+        ("MS", "matching_score"),
+        ("HA", "homography_accuracy"),
+    ]
+    rows: List[Dict[str, str]] = []
+    for method_key, results in data.items():
+        if partition not in results:
+            continue
+        partition_data = results[partition]
+
+        # Method / Custom Desc parsing
+        if "+" in method_key:
+            method_name, custom_desc_part = method_key.split("+", 1)
+            custom_desc = custom_desc_part.split("_")[0]
+        else:
+            method_name = method_key.split("_")[0]
+            custom_desc = ""
+
+        row: Dict[str, str] = {"Method": method_name, "Desc": custom_desc}
+        for label, metric in metric_specs:
+            for thr in ths:
+                key = f"{metric}_{thr}"
+                if key in partition_data:
+                    mean = partition_data[key].get("mean", 0.0)
+                    row[f"{label}@{thr}"] = f"{mean * 100:.1f}"
+        rows.append(row)
+    return rows
+
+
+def _print_hpatches_table(rows, ths):
+    """Pretty-print the results table to stdout."""
+    fixed_cols = ["Method", "Custom Desc"]
+    metric_cols_order: List[str] = []
+    for label in ("Rep", "MA", "MS", "HA"):
+        for thr in ths:
+            metric_cols_order.append(f"{label}@{thr}")
+
+    # Keep only metrics that appear at least once
+    present_metrics = [c for c in metric_cols_order if any(c in r for r in rows)]
+    cols = fixed_cols + present_metrics
+
+    widths = {c: len(c) for c in cols}
+    for r in rows:
+        for c in cols:
+            widths[c] = max(widths[c], len(str(r.get(c, ""))))
+
+    header = " | ".join(c.ljust(widths[c]) for c in cols)
+    sep = "-+-".join("-" * widths[c] for c in cols)
+    print(header)
+    print(sep)
+    for r in rows:
+        line = " | ".join(str(r.get(c, "")).ljust(widths[c]) for c in cols)
+        print(line)
 
 
 def display_hpatches_results(
@@ -1080,73 +1186,10 @@ def display_hpatches_results(
                 print(f"Method '{method}' not found in results.")
             return []
 
-    # Auto-detect thresholds if not provided
     if ths is None:
-        ths_detected: List[int] = []
-        for _, results in data.items():
-            if partition in results:
-                partition_data = results[partition]
-                for key in partition_data.keys():
-                    if key.startswith("repeatability_"):
-                        thr = key.split("_")[-1]
-                        try:
-                            thr_val = int(float(thr))
-                            if thr_val not in ths_detected:
-                                ths_detected.append(thr_val)
-                        except ValueError:
-                            continue
-        ths = sorted(ths_detected) if ths_detected else [1, 2, 3]
+        ths = _detect_repeatability_thresholds(data, partition)
 
-    # Build rows
-    rows: List[Dict[str, str]] = []
-    for method_key, results in data.items():
-        if partition not in results:
-            continue
-        partition_data = results[partition]
-
-        # Method / Custom Desc parsing
-        if "+" in method_key:
-            method_name, custom_desc_part = method_key.split("+", 1)
-            custom_desc = custom_desc_part.split("_")[0]
-        else:
-            method_name = method_key.split("_")[0]
-            custom_desc = ""
-
-        row: Dict[str, str] = {
-            "Method": method_name,
-            "Desc": custom_desc,
-        }
-
-        # Repeatability
-        for thr in ths:
-            rep_key = f"repeatability_{thr}"
-            if rep_key in partition_data:
-                rep_data = partition_data[rep_key]
-                row[f"Rep@{thr}"] = f"{rep_data.get('mean', 0.0)*100:.1f}"
-
-        # Matching Accuracy
-        for thr in ths:
-            ma_key = f"matching_accuracy_{thr}"
-            if ma_key in partition_data:
-                ma_data = partition_data[ma_key]
-                row[f"MA@{thr}"] = f"{ma_data.get('mean', 0.0)*100:.1f}"
-
-        # Matching Score
-        for thr in ths:
-            ms_key = f"matching_score_{thr}"
-            if ms_key in partition_data:
-                ms_data = partition_data[ms_key]
-                row[f"MS@{thr}"] = f"{ms_data.get('mean', 0.0)*100:.1f}"
-
-        # Homography Accuracy
-        for thr in ths:
-            ha_key = f"homography_accuracy_{thr}"
-            if ha_key in partition_data:
-                ha_data = partition_data[ha_key]
-                row[f"HA@{thr}"] = f"{ha_data.get('mean', 0.0)*100:.1f}"
-
-        rows.append(row)
-
+    rows = _build_hpatches_rows(data, partition, ths)
     if not rows:
         if tostring:
             print(f"No results found for partition '{partition}'")
@@ -1155,43 +1198,7 @@ def display_hpatches_results(
     # Sort by Method then Custom Desc
     rows.sort(key=lambda r: (r.get("Method", ""), r.get("Custom Desc", "")))
 
-    # Pretty print table
     if tostring:
-        # Determine all columns in order: fixed cols, then metrics discovered
-        fixed_cols = ["Method", "Custom Desc"]
-        metric_cols_order: List[str] = []
-        for thr in ths:
-            metric_cols_order.append(f"Rep@{thr}")
-        for thr in ths:
-            metric_cols_order.append(f"MA@{thr}")
-        for thr in ths:
-            metric_cols_order.append(f"MS@{thr}")
-        for thr in ths:
-            metric_cols_order.append(f"HA@{thr}")
-
-        # Keep only metrics that appear at least once
-        present_metrics = []
-        for col in metric_cols_order:
-            if any(col in r for r in rows):
-                present_metrics.append(col)
-
-        cols = fixed_cols + present_metrics
-
-        # Compute column widths
-        widths = {c: len(c) for c in cols}
-        for r in rows:
-            for c in cols:
-                widths[c] = max(widths[c], len(str(r.get(c, ""))))
-
-        # Build header and separator
-        header = " | ".join(c.ljust(widths[c]) for c in cols)
-        sep = "-+-".join("-" * widths[c] for c in cols)
-        print(header)
-        print(sep)
-
-        # Print rows
-        for r in rows:
-            line = " | ".join(str(r.get(c, "")).ljust(widths[c]) for c in cols)
-            print(line)
+        _print_hpatches_table(rows, ths)
 
     return rows

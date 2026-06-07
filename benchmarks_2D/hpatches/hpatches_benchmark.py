@@ -23,10 +23,10 @@ from datetime import datetime
 
 
 from matchers.mnn import MNN
+from common.serialization import convert_numpy_types
 from benchmarks_2D.utils_benchmark import (
     str2bool,
     fix_rng,
-    convert_numpy_types,
 )
 from benchmarks_2D.hpatches.utils_hpatches_benchmark import (
     _is_nan,
@@ -46,6 +46,65 @@ except ImportError:
         "tqdm not found, you'll get no progress bars. Install it with `pip install tqdm`."
     )
     from benchmarks_2D.utils_benchmark import fake_tqdm as tqdm
+
+
+def _hpatches_threshold_metrics(row, homography_data, thr):
+    """Build the metric dicts (repeatability / scores / homography / match stats) for one threshold."""
+    metrics = {
+        f"repeatability_{thr}": {
+            "mean": (
+                float(row["mean_repeatability"])
+                if not _is_nan(row["mean_repeatability"])
+                else float("nan")
+            ),
+            "median": (
+                float(row["median_repeatability"])
+                if "median_repeatability" in row
+                and not _is_nan(row["median_repeatability"])
+                else float("nan")
+            ),
+        },
+        f"matching_score_{thr}": {
+            "mean": float(row["mean_matching_score"]),
+            "median": (
+                float(row["median_matching_score"])
+                if "median_matching_score" in row
+                else float(row["mean_matching_score"])
+            ),
+        },
+        f"matching_accuracy_{thr}": {
+            "mean": float(row["mean_matching_accuracy"]),
+            "median": (
+                float(row["median_matching_accuracy"])
+                if "median_matching_accuracy" in row
+                else float(row["mean_matching_accuracy"])
+            ),
+        },
+    }
+
+    hom_data_for_thr = homography_data[homography_data["accuracy_thr"] == float(thr)]
+    if len(hom_data_for_thr) > 0:
+        # Row with highest homography accuracy across all ransac_thr
+        best_row = hom_data_for_thr.loc[hom_data_for_thr["homography_accuracy"].idxmax()]
+        metrics[f"homography_accuracy_{thr}"] = {
+            "mean": float(best_row["homography_accuracy"]),
+            "median": float(best_row["homography_accuracy"]),
+            "best_ransac_thr": float(best_row["ransac_thr"]),
+        }
+    else:
+        metrics[f"homography_accuracy_{thr}"] = {
+            "mean": 0.0,
+            "median": 0.0,
+            "best_ransac_thr": None,
+        }
+
+    metrics[f"match_stats_{thr}"] = {
+        "total_matches_mean": float(row["mean_n_matches_proposed"]),
+        "inliers_mean": float(row["mean_n_inliers_nn_GT"]),
+        "precision_mean": float(row["mean_precision"]),
+        "recall_mean": float(row["mean_recall"]),
+    }
+    return metrics
 
 
 class HPatchesBenchmark:
@@ -87,7 +146,7 @@ class HPatchesBenchmark:
         # extract features for all images
         keypoints = {folder_name: [] for folder_name in hpatches}
         descriptors = {folder_name: [] for folder_name in hpatches}
-        for folder_name, data in tqdm(hpatches.items(), f"Extracting keypoints"):
+        for folder_name, data in tqdm(hpatches.items(), "Extracting keypoints"):
             for img in data["imgs"]:
                 # img = wrapper.img_from_numpy(img_np)
                 output = wrapper.extract(
@@ -110,6 +169,26 @@ class HPatchesBenchmark:
         )
         return keypoints, descriptors
 
+    def _load_or_extract_features(self, hpatches, wrapper):
+        """Extract features, or load them from self.feature_path when provided."""
+        if self.feature_path is None:
+            return self.extract_features_with_wrapper(hpatches, wrapper)
+        features_dict = torch.load(self.feature_path, weights_only=False)
+        logger.info(f"Loaded features from {self.feature_path}.")
+        return features_dict["keypoints"], features_dict["descriptors"]
+
+    def _compute_all_stats(self, keypoints, matches, hpatches):
+        """Run compute_matching_stats with this benchmark's configured thresholds."""
+        return compute_matching_stats(
+            keypoints,
+            matches,
+            hpatches,
+            max_kpts=self.max_kpts,
+            px_thrs=self.thresholds,
+            ransac_thresholds=[0.5, 0.75, 1, 1.5, 2, 2.5, 3, 4, 5],
+            njobs=self.njobs,
+        )
+
     def benchmark(self, wrapper, device="cuda"):
         """Run HPatches benchmark on given wrapper."""
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -118,26 +197,10 @@ class HPatchesBenchmark:
         # first load all images
         hpatches = load_hpatches_in_memory(wrapper, self.data_path)
 
-        # Phase 1: Extract all features
-        if self.feature_path is None:
-            keypoints, descriptors = self.extract_features_with_wrapper(
-                hpatches, wrapper
-            )
-        else:
-            features_dict = torch.load(self.feature_path, weights_only=False)
-            keypoints = features_dict["keypoints"]
-            descriptors = features_dict["descriptors"]
-            logger.info(f"Loaded features from {self.feature_path}.")
+        # Phase 1: Extract (or load) all features
+        keypoints, descriptors = self._load_or_extract_features(hpatches, wrapper)
 
-        # match all pairs
-        wrapper.matcher = self.matcher
-        matches = {folder_name: {} for folder_name in descriptors}
-        for folder_name, des_folder in tqdm(descriptors.items(), f"Matching keypoints"):
-            for i in range(2, 7):
-                # Remove the extra list wrapping
-                matches[folder_name][f"1_{i}"] = wrapper.match(
-                    [des_folder[0]], [des_folder[i - 1]]
-                )[0].matches.cpu()
+        matches = self._match_all_pairs(wrapper, descriptors)
 
         # ensure all is on cpu to avoid GPU OOM issues
         for scene in hpatches.keys():
@@ -149,36 +212,15 @@ class HPatchesBenchmark:
             aggregated_df,
             stats_homography_df,
             aggregated_homography_accuracy_df,
-        ) = compute_matching_stats(
-            keypoints,
-            matches,
-            hpatches,
-            max_kpts=self.max_kpts,
-            px_thrs=self.thresholds,
-            ransac_thresholds=[0.5, 0.75, 1, 1.5, 2, 2.5, 3, 4, 5],
-            njobs=self.njobs,
-        )
+        ) = self._compute_all_stats(keypoints, matches, hpatches)
 
-        # csv
         if self.save_csv:
-            results_dir = Path("benchmarks_2D/hpatches/results/csv")
-            results_dir.mkdir(parents=True, exist_ok=True)
-
-            stats_df.to_csv(
-                results_dir / f"{wrapper.name}_{self.max_kpts}_stats.csv", index=False
-            )
-            aggregated_df.to_csv(
-                results_dir / f"{wrapper.name}_{self.max_kpts}_aggregated.csv",
-                index=False,
-            )
-            stats_homography_df.to_csv(
-                results_dir / f"{wrapper.name}_{self.max_kpts}_stats_homography.csv",
-                index=False,
-            )
-            aggregated_homography_accuracy_df.to_csv(
-                results_dir
-                / f"{wrapper.name}_{self.max_kpts}_aggregated_homography_accuracy.csv",
-                index=False,
+            self._save_csv(
+                wrapper.name,
+                stats_df,
+                aggregated_df,
+                stats_homography_df,
+                aggregated_homography_accuracy_df,
             )
 
         results = {
@@ -187,17 +229,58 @@ class HPatchesBenchmark:
             "matcher_params": self.matcher_params,
             "timestamp": timestamp,
         }
+        results.update(
+            self._build_category_results(
+                stats_df, aggregated_df, aggregated_homography_accuracy_df
+            )
+        )
+        return results, timestamp
 
-        for category in [
-            "overall",
-            "i",
-            "v",
-        ]:  # illumination (i), viewpoint (v), overall
+    def _match_all_pairs(self, wrapper, descriptors):
+        """Match pair (1, i) for i in 2..6 in every sequence."""
+        wrapper.matcher = self.matcher
+        matches = {folder_name: {} for folder_name in descriptors}
+        for folder_name, des_folder in tqdm(descriptors.items(), "Matching keypoints"):
+            for i in range(2, 7):
+                matches[folder_name][f"1_{i}"] = wrapper.match(
+                    [des_folder[0]], [des_folder[i - 1]]
+                )[0].matches.cpu()
+        return matches
+
+    def _save_csv(
+        self,
+        name,
+        stats_df,
+        aggregated_df,
+        stats_homography_df,
+        aggregated_homography_accuracy_df,
+    ):
+        """Write the four per-run result DataFrames to CSV."""
+        results_dir = Path("benchmarks_2D/hpatches/results/csv")
+        results_dir.mkdir(parents=True, exist_ok=True)
+        stats_df.to_csv(results_dir / f"{name}_{self.max_kpts}_stats.csv", index=False)
+        aggregated_df.to_csv(
+            results_dir / f"{name}_{self.max_kpts}_aggregated.csv", index=False
+        )
+        stats_homography_df.to_csv(
+            results_dir / f"{name}_{self.max_kpts}_stats_homography.csv", index=False
+        )
+        aggregated_homography_accuracy_df.to_csv(
+            results_dir / f"{name}_{self.max_kpts}_aggregated_homography_accuracy.csv",
+            index=False,
+        )
+
+    def _build_category_results(
+        self, stats_df, aggregated_df, aggregated_homography_accuracy_df
+    ):
+        """Build the per-category (overall/i/v) result sections."""
+        results = {}
+        # illumination (i), viewpoint (v), overall
+        for category in ["overall", "i", "v"]:
             category_data = aggregated_df[aggregated_df["type"] == category]
             homography_data = aggregated_homography_accuracy_df[
                 aggregated_homography_accuracy_df["type"] == category
             ]
-
             if len(category_data) == 0:
                 continue
 
@@ -212,86 +295,17 @@ class HPatchesBenchmark:
                     if category != "overall"
                     else len(stats_df[stats_df["type"].isin(["i", "v"])])
                 ),
-                "mean_keypoints": (
-                    float(category_data["mean_n_keypoints"].iloc[0])
-                    if len(category_data) > 0
-                    else 0.0
-                ),
+                "mean_keypoints": float(category_data["mean_n_keypoints"].iloc[0]),
             }
 
-            # Add metrics for each threshold
             for thr in self.thresholds:
                 thr_data = category_data[category_data["thr"] == thr]
                 if len(thr_data) == 0:
                     continue
-
-                row = thr_data.iloc[0]
-
-                # Repeatability
-                # Check if column exists properly
-                results[category][f"repeatability_{thr}"] = {
-                    "mean": (
-                        float(row["mean_repeatability"])
-                        if not _is_nan(row["mean_repeatability"])
-                        else float("nan")
-                    ),
-                    "median": (
-                        float(row["median_repeatability"])
-                        if "median_repeatability" in row
-                        and not _is_nan(row["median_repeatability"])
-                        else float("nan")
-                    ),
-                }
-
-                # Matching Score
-                results[category][f"matching_score_{thr}"] = {
-                    "mean": float(row["mean_matching_score"]),
-                    "median": (
-                        float(row["median_matching_score"])
-                        if "median_matching_score" in row
-                        else float(row["mean_matching_score"])
-                    ),
-                }
-
-                # Matching Accuracy
-                results[category][f"matching_accuracy_{thr}"] = {
-                    "mean": float(row["mean_matching_accuracy"]),
-                    "median": (
-                        float(row["median_matching_accuracy"])
-                        if "median_matching_accuracy" in row
-                        else float(row["mean_matching_accuracy"])
-                    ),
-                }
-
-                # Homography Accuracy - get from homography_data
-                hom_data_for_thr = homography_data[
-                    homography_data["accuracy_thr"] == float(thr)
-                ]
-                if len(hom_data_for_thr) > 0:
-                    # Get the row with highest homography accuracy across all ransac_thr
-                    best_idx = hom_data_for_thr["homography_accuracy"].idxmax()
-                    best_row = hom_data_for_thr.loc[best_idx]
-
-                    results[category][f"homography_accuracy_{thr}"] = {
-                        "mean": float(best_row["homography_accuracy"]),
-                        "median": float(best_row["homography_accuracy"]),
-                        "best_ransac_thr": float(best_row["ransac_thr"]),
-                    }
-                else:
-                    results[category][f"homography_accuracy_{thr}"] = {
-                        "mean": 0.0,
-                        "median": 0.0,
-                        "best_ransac_thr": None,
-                    }
-                # Match statistics
-                results[category][f"match_stats_{thr}"] = {
-                    "total_matches_mean": float(row["mean_n_matches_proposed"]),
-                    "inliers_mean": float(row["mean_n_inliers_nn_GT"]),
-                    "precision_mean": float(row["mean_precision"]),
-                    "recall_mean": float(row["mean_recall"]),
-                }
-
-        return results, timestamp
+                results[category].update(
+                    _hpatches_threshold_metrics(thr_data.iloc[0], homography_data, thr)
+                )
+        return results
 
 
 if __name__ == "__main__":
@@ -465,7 +479,7 @@ if __name__ == "__main__":
         json.dump(data, f, indent=2, sort_keys=True)
 
     print(
-        f"Results computed in {total_time:.1f} seconds and saved to {results_path/'results.json'}"
+        f"Results computed in {total_time:.1f} seconds and saved to {results_path / 'results.json'}"
     )
 
     # Print summary
@@ -475,4 +489,4 @@ if __name__ == "__main__":
         partition="overall",
         method=f"{key}_{timestamp}",
     )
-    print(f"{'='*80}")
+    print(f"{'=' * 80}")
