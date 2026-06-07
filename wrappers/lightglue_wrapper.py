@@ -1,3 +1,5 @@
+"""Wrapper for the LightGlue learned matcher (with sparse keypoint detectors)."""
+
 import warnings
 from pathlib import Path
 from typing import Union
@@ -13,12 +15,22 @@ from lightglue.utils import load_image, rbd
 
 
 class LightGlueWrapper(MethodWrapper):
+    """Pairs a sparse keypoint detector with the LightGlue matcher."""
+
     def __init__(
         self,
         detector_name: str = "superpoint",
         device: str = "cuda:0",
         border: int = 16,
     ) -> None:
+        """Load the LightGlue matcher for the chosen detector.
+
+        Args:
+            detector_name: One of "superpoint", "disk", "sift", "aliked"; selects
+                the keypoint detector and the matching LightGlue weights.
+            device: Torch device to load the matcher onto.
+            border: Image border margin (pixels) inherited by MethodWrapper.
+        """
         assert detector_name in [
             "superpoint",
             "disk",

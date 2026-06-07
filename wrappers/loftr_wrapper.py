@@ -1,3 +1,5 @@
+"""Wrapper for the LoFTR detector-free dense matcher (via kornia)."""
+
 import sys
 import warnings
 import torch
@@ -16,11 +18,19 @@ import kornia.feature as KF
 
 
 class LoFTRWrapper(MethodWrapper):
+    """Wraps kornia's pretrained LoFTR model as a dense pair matcher."""
+
     def __init__(
         self,
         device: str = "cuda:0",
         border: int = 16,
     ) -> None:
+        """Load the pretrained outdoor LoFTR model.
+
+        Args:
+            device: Torch device to load the model onto.
+            border: Image border margin (pixels) inherited by MethodWrapper.
+        """
         name = "loftr"
         super().__init__(name=name, border=border, device=device)
         self.is_sparse_feature_extractor = False

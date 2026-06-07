@@ -1,3 +1,5 @@
+"""Wrapper for the DeDoDe detector/descriptor method."""
+
 import sys
 import gc
 import warnings
@@ -21,6 +23,8 @@ from wrappers.wrapper import MethodWrapper, MethodOutput
 
 
 class DeDoDeWrapper(MethodWrapper):
+    """MethodWrapper for the DeDoDe detector and descriptor models."""
+
     def __init__(
         self,
         v2: bool = False,
@@ -28,6 +32,14 @@ class DeDoDeWrapper(MethodWrapper):
         device: str = "cuda:0",
         border: int = 16,
     ) -> None:
+        """Load the DeDoDe detector and chosen descriptor with their weights.
+
+        Args:
+            v2: Use the v2 detector weights instead of the v1 detector.
+            descriptor_G: Use the G descriptor instead of the default B descriptor.
+            device: Torch device to load the models on.
+            border: Border (in pixels) used to discard keypoints near image edges.
+        """
         name = "dedode" if not v2 else "dedode2"
         name += "-G" if descriptor_G else "-B"
         super().__init__(name=name, border=border, device=device)
@@ -61,6 +73,15 @@ class DeDoDeWrapper(MethodWrapper):
     def add_custom_descriptor(
         self, model: torch.nn.Module, grad: bool = False
     ) -> None:
+        """Replace the DeDoDe descriptor with a custom descriptor network.
+
+        Moves the model to the wrapper device, frees the original descriptor, and
+        runs garbage collection / empties the CUDA cache.
+
+        Args:
+            model: Custom descriptor network used in place of the DeDoDe descriptor.
+            grad: If False, freeze the custom descriptor's parameters.
+        """
         self.custom_descriptor = model
         if not grad:
             for p in self.custom_descriptor.parameters():
@@ -79,6 +100,22 @@ class DeDoDeWrapper(MethodWrapper):
         max_kpts: int = 2048,
         custom_kpts: Optional[torch.Tensor] = None,
     ) -> MethodOutput:
+        """Detect keypoints and compute descriptors for a single image.
+
+        Normalizes the image with ImageNet stats, detects keypoints (or uses
+        provided custom keypoints), and describes them with the DeDoDe descriptor
+        (L2-normalized) or a custom descriptor sampled at keypoint locations. The
+        G descriptor path crops the image to a multiple of 14 first.
+
+        Args:
+            x: Image tensor, CHW or NCHW (a leading batch dim is added if missing).
+            max_kpts: Maximum number of keypoints to detect.
+            custom_kpts: Optional pixel-coordinate keypoints to describe instead of
+                running the detector; their scores are set to ones.
+
+        Returns:
+            MethodOutput with pixel keypoints, keypoint scores, and descriptors.
+        """
         x = x if x.dim() == 4 else x[None]
 
         # eventually cropping/padding to multiples of 14

@@ -1,3 +1,5 @@
+"""Wrapper for the RDD (Robust Deep Detector/Descriptor) method."""
+
 import sys
 import yaml
 import warnings
@@ -16,9 +18,21 @@ from wrappers.wrapper import MethodWrapper, MethodOutput
 
 
 class RDDWrapper(MethodWrapper):
+    """MethodWrapper for the RDD detector/descriptor model."""
+
     def __init__(
         self, device: str = "cuda:0", border: int = 16, config: Optional[dict] = None
     ) -> None:
+        """Build the RDD model from its config and weights, frozen in eval mode.
+
+        Args:
+            device: Torch device to load the model on.
+            border: Border (in pixels) used to discard keypoints near image edges.
+            config: Optional RDD config dict; loaded from the default YAML if None.
+
+        Raises:
+            RuntimeError: If the config/weights are missing or initialization fails.
+        """
         super().__init__(name="rdd", border=border, device=device)
 
         try:
@@ -60,6 +74,19 @@ class RDDWrapper(MethodWrapper):
         max_kpts: int = 2048,
         custom_kpts: Optional[torch.Tensor] = None,
     ) -> MethodOutput:
+        """Extract keypoints, scores, and descriptors for a single image.
+
+        Rebuilds the model if ``max_kpts`` differs from the configured ``top_k``,
+        then runs RDD's extractor on the image.
+
+        Args:
+            x: Image tensor, CHW or NCHW (a leading batch dim is added if missing).
+            max_kpts: Maximum number of keypoints (the model's ``top_k``).
+            custom_kpts: Unused; kept for interface compatibility.
+
+        Returns:
+            MethodOutput with keypoints, keypoint scores, and descriptors.
+        """
         if self.config["top_k"] != max_kpts:
             self.config["top_k"] = max_kpts
             self.__init__(device=self.device, border=self.border, config=self.config)

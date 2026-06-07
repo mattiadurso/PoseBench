@@ -1,3 +1,5 @@
+"""Wrapper for S-TREK, a scale- and translation-equivariant keypoint detector paired with a U-Net descriptor."""
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -24,6 +26,8 @@ from utils.method_wrapper import MethodWrapper, MethodOutput
 
 
 class StrekWrapper(MethodWrapper):
+    """MethodWrapper for the S-TREK sparse detector and U-Net descriptor."""
+
     def __init__(
         self,
         model: object | None = None,
@@ -33,6 +37,17 @@ class StrekWrapper(MethodWrapper):
         matcher: Matcher | None = None,
         device: str = "cuda",
     ) -> None:
+        """Initialize the detector and descriptor networks and sampling config.
+
+        Args:
+            model: Pre-built detector model; if None, the paper detector is loaded.
+            border: Border pixels ignored by the detector's receptive field.
+            multiscale: List of image scale factors for multiscale extraction;
+                empty/falsy disables multiscale.
+            inference_det_map_thr: Detection-map threshold used at inference.
+            matcher: Optional matcher to attach to the wrapper.
+            device: Torch device for the models.
+        """
         super().__init__("S-TREK", border=border, device=device)
 
         self.is_sparse_feature_extractor = True
@@ -80,6 +95,15 @@ class StrekWrapper(MethodWrapper):
         self.img_dimension_multiple_of = 8
 
     def img_from_numpy(self, img: np.ndarray, device: str = None) -> Tensor:
+        """Crop a numpy image to a multiple of 16 and convert it to a tensor.
+
+        Args:
+            img: HxW(xC) numpy image.
+            device: Target device; defaults to the wrapper's device.
+
+        Returns:
+            The transformed image tensor on the given device.
+        """
         device = device if device is not None else self.device
         # print('WARNING: forcing image resolution multiple of 16')
         img = img[: img.shape[0] // 16 * 16, : img.shape[1] // 16 * 16]
@@ -89,6 +113,15 @@ class StrekWrapper(MethodWrapper):
     def add_descriptors_to_output(
         self, img: Tensor, output: MethodOutput
     ) -> MethodOutput:
+        """Sample U-Net descriptors at the output keypoints and store them.
+
+        Args:
+            img: Single-channel image tensor to descibe.
+            output: MethodOutput holding the keypoints to sample descriptors at.
+
+        Returns:
+            The same output with `des`, `des_vol`, and `des_scores` populated.
+        """
         # des_vol, conf = self.descriptor_network(img[None])
         des_vol = self.descriptor_network(img[None])
         conf = None
@@ -109,6 +142,16 @@ class StrekWrapper(MethodWrapper):
         return output
 
     def _extract_upscale(self, img: Tensor, max_kpts: int) -> MethodOutput:
+        """Detect keypoints on a 2x upscaled image, then map them back to the
+        original resolution and optionally add descriptors.
+
+        Args:
+            img: Single-channel image tensor.
+            max_kpts: Maximum number of keypoints to keep.
+
+        Returns:
+            MethodOutput with keypoints in original-image coordinates.
+        """
         scale = 2.0
         img_scaled = th.nn.functional.interpolate(
             img[None], scale_factor=scale, mode="bilinear", align_corners=False
@@ -128,6 +171,21 @@ class StrekWrapper(MethodWrapper):
         return output
 
     def _extract_multiscale(self, img: Tensor, max_kpts: int) -> MethodOutput:
+        """Detect keypoints across the `self.multiscale` pyramid, rescale them to
+        the original resolution, then keep the top-scoring `max_kpts`.
+
+        Scales producing images smaller than 128px are skipped; when a descriptor
+        network is set, descriptors are gathered per scale and sorted alongside
+        the keypoints.
+
+        Args:
+            img: Single-channel image tensor.
+            max_kpts: Maximum number of keypoints to retain after sorting.
+
+        Returns:
+            MethodOutput with pooled keypoints, sizes, scales, angles, and
+            optional descriptors.
+        """
         all_kpts = th.zeros((0, 2), device=img.device)
         all_scores = th.zeros((0,), device=img.device)
         all_sizes = th.zeros((0,), device=img.device)
@@ -198,6 +256,20 @@ class StrekWrapper(MethodWrapper):
     def _extract(
         self, img: Tensor, max_kpts: int, embs: Tensor | None = None
     ) -> MethodOutput:
+        """Extract keypoints (and optional descriptors) from an image.
+
+        Dispatches to multiscale extraction when `self.multiscale` is set;
+        otherwise runs single-scale detection and attaches the full descriptor
+        volume.
+
+        Args:
+            img: Single-channel image tensor.
+            max_kpts: Maximum number of keypoints to keep.
+            embs: Unused; kept for interface compatibility.
+
+        Returns:
+            The resulting MethodOutput.
+        """
         if self.multiscale:
             return self._extract_multiscale(img, max_kpts)
 
@@ -221,6 +293,17 @@ class StrekWrapper(MethodWrapper):
     def _extract_with_additional_descriptors_from_keypoints(
         self, img: Tensor | np.ndarray, max_kpts: float | int, kpts_additional: Tensor
     ) -> tuple[MethodOutput, Tensor]:
+        """Run normal extraction and also sample descriptors at extra keypoints.
+
+        Args:
+            img: Image tensor or numpy array.
+            max_kpts: Maximum number of keypoints for the standard extraction.
+            kpts_additional: Extra keypoint coordinates to describe.
+
+        Returns:
+            Tuple of the standard MethodOutput and the descriptors sampled at
+            `kpts_additional` (shape max_n_keypoints x des_dim).
+        """
         output = self._extract(img, max_kpts)
         # ? eventually extract descriptors
         des_vol, conf = self.descriptor_network(img[None])
@@ -231,6 +314,20 @@ class StrekWrapper(MethodWrapper):
         return output, des
 
     def compute_detmap(self, img: Tensor, policy_output: list = None) -> Tensor:
+        """Run the detector and serial sampler to get a normalized detection map.
+
+        Crops the image to a multiple of `img_dimension_multiple_of`, runs the
+        detector to obtain logits, builds a SerialSampler policy, and normalizes
+        its probability map by its maximum.
+
+        Args:
+            img: Unbatched (CxHxW) single-channel image tensor.
+            policy_output: Optional list; if provided, the sampler policy is
+                appended to it.
+
+        Returns:
+            The max-normalized detection map.
+        """
         assert img.ndim == 3, "image must be not batched"
         img = img.clone()
         # ? the crop keep the top-left pixel such that the coordinated do not change
@@ -260,6 +357,20 @@ class StrekWrapper(MethodWrapper):
     def get_keypoints_from_detmap(
         self, det_map_norm: Tensor, max_kpts: float | int, thr: float = None
     ) -> MethodOutput:
+        """Extract keypoints as NMS local maxima of a detection map.
+
+        Coordinates are offset by the detector border (the detection map is
+        smaller than the input image) and assigned placeholder receptive-field
+        sizes.
+
+        Args:
+            det_map_norm: Normalized detection map.
+            max_kpts: Maximum number of maxima to extract.
+            thr: Score threshold; falls back to `self.thr_detector` when falsy.
+
+        Returns:
+            MethodOutput with keypoints, scores, sizes, and the detection map.
+        """
         # ? extract keypoints as local maxima
         thr = thr if thr else self.thr_detector
         xy, scores = extract_maxima_from_map(
@@ -321,6 +432,18 @@ class StrekWrapper(MethodWrapper):
     def crop_to_multiple_of(
         self, img: Tensor | np.ndarray, multiple_of: int = 16
     ) -> Tensor | np.ndarray:
+        """Crop an image so its height and width are multiples of `multiple_of`.
+
+        Handles both numpy arrays (HxWxC) and tensors (...xHxW), keeping the
+        top-left region.
+
+        Args:
+            img: Image as a numpy array or tensor.
+            multiple_of: Required divisor for the output height and width.
+
+        Returns:
+            The cropped image, same type as the input.
+        """
         if isinstance(img, np.ndarray):
             H, W = img.shape[:2]
             new_H = (H // multiple_of) * multiple_of

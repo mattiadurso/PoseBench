@@ -1,3 +1,5 @@
+"""Wrapper for SIFT feature extraction via pycolmap."""
+
 from typing import Optional
 
 import torch
@@ -8,6 +10,8 @@ from wrappers.wrapper import MethodWrapper, MethodOutput
 
 
 class SIFTPyColmapWrapper(MethodWrapper):
+    """MethodWrapper for SIFT keypoints and descriptors using pycolmap."""
+
     def __init__(
         self, device: str = "cuda", border: int = 16, sift_opts: Optional[dict] = None
     ) -> None:

@@ -1,3 +1,5 @@
+"""Wrapper for the RoMa dense feature matcher."""
+
 import sys
 import warnings
 import torch
@@ -16,11 +18,19 @@ from romatch import roma_outdoor
 
 
 class RoMaWrapper(MethodWrapper):
+    """Wraps the pretrained outdoor RoMa model as a dense pair matcher."""
+
     def __init__(
         self,
         device: str = "cuda:0",
         border: int = 16,
     ) -> None:
+        """Load the pretrained outdoor RoMa model.
+
+        Args:
+            device: Torch device to load the model onto.
+            border: Image border margin (pixels) inherited by MethodWrapper.
+        """
         name = "roma"
         super().__init__(name=name, border=border, device=device)
         self.is_sparse_feature_extractor = False

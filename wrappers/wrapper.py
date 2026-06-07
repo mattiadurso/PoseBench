@@ -1,3 +1,5 @@
+"""Base wrapper and standardized output types shared by all method wrappers."""
+
 from __future__ import annotations
 from abc import ABC
 from dataclasses import dataclass
@@ -29,6 +31,23 @@ Number = Union[int, float]
 
 @dataclass
 class MethodOutput:
+    """Standardized output of a feature extractor.
+
+    Provides a common container so every wrapper returns the same fields
+    regardless of the underlying method. Missing optional fields are filled
+    with neutral defaults in :meth:`__post_init__`.
+
+    Attributes:
+        kpts: ``(N, 2)`` keypoint pixel coordinates.
+        kpts_scores: ``(N,)`` per-keypoint detection scores.
+        kpts_sizes: ``(N,)`` per-keypoint receptive-field sizes.
+        kpts_scales: ``(N,)`` resolution at which each keypoint was extracted
+            (for multiscale detectors).
+        kpts_angles: ``(N,)`` per-keypoint orientation angles.
+        des: ``(N, D)`` per-keypoint descriptors, if any.
+        des_vol: Dense descriptor volume, if any.
+    """
+
     kpts: Tensor
     kpts_scores: Optional[Tensor] = None
     kpts_sizes: Optional[Tensor] = None  # receptive field
@@ -40,6 +59,7 @@ class MethodOutput:
     des_vol: Optional[Tensor] = None
 
     def __post_init__(self) -> None:
+        """Validate ``kpts`` shape and fill missing fields with defaults."""
         assert self.kpts.ndim == 2, (
             f"kpts must have shape (N, 2), got {self.kpts.shape}"
         )
@@ -55,12 +75,15 @@ class MethodOutput:
             self.kpts_angles = torch.zeros_like(self.kpts[:, 0])
 
     def __getitem__(self, key: Union[str, None]) -> Tensor:
+        """Return the field named ``key``."""
         return self.__dict__[key]
 
     def __contains__(self, item: object) -> bool:
+        """Return whether ``item`` is a field name."""
         return item in self.__dict__
 
     def get(self, key: str) -> Optional[Any]:
+        """Return the field named ``key``, or ``None`` if absent."""
         return self[key] if key in self.__dict__ else None
 
     def cpu(self) -> "MethodOutput":
@@ -82,6 +105,15 @@ class MethodOutput:
         )
 
     def mask(self, mask: Tensor) -> "MethodOutput":
+        """Return a new output keeping only keypoints selected by a boolean mask.
+
+        Args:
+            mask: ``(N,)`` boolean tensor selecting keypoints to keep.
+
+        Returns:
+            A new :class:`MethodOutput` with per-keypoint fields filtered.
+            ``des_vol`` is copied unchanged since it is not per-keypoint.
+        """
         assert mask.dtype == torch.bool, "mask must be boolean"
         return MethodOutput(
             kpts=self.kpts.clone()[mask],
@@ -112,9 +144,26 @@ class PairMatches(NamedTuple):
 
 
 class MethodWrapper(ABC):
+    """Abstract base class for feature detection/description/matching methods.
+
+    Subclasses adapt a third-party method to a common interface. Sparse
+    extractors implement :meth:`_extract`; dense matchers implement
+    :meth:`match_pair`. Shared image loading, normalization, and matching
+    helpers live here.
+    """
+
     def __init__(
         self, name: str, border: int = 0, device: str = "cpu", use_amp: bool = True
     ) -> None:
+        """Initialize the wrapper.
+
+        Args:
+            name: Identifier of the wrapped method.
+            border: Pixel margin; keypoints within it are discarded in
+                :meth:`extract`.
+            device: Torch device to run on.
+            use_amp: Whether to use automatic mixed precision (float16).
+        """
         self.name = name
         self.border = border
         self.device = device
@@ -166,6 +215,15 @@ class MethodWrapper(ABC):
     def crop_to_multiple_of(
         self, img: Union[Tensor, np.ndarray], multiple_of: int = 16
     ) -> Union[Tensor, np.ndarray]:
+        """Crop an image so its height and width are multiples of ``multiple_of``.
+
+        Args:
+            img: Image as ``HxWxC`` ndarray or ``...xHxW`` tensor.
+            multiple_of: Required divisor for both spatial dimensions.
+
+        Returns:
+            The cropped image, same type as the input.
+        """
         if isinstance(img, np.ndarray):
             H, W = img.shape[:2]
             new_H = (H // multiple_of) * multiple_of
@@ -183,6 +241,12 @@ class MethodWrapper(ABC):
     def add_custom_descriptor(
         self, model: torch.nn.Module, grad: bool = False
     ) -> None:
+        """Attach a custom descriptor model and move it to the wrapper device.
+
+        Args:
+            model: Module taking ``(B, C, H, W)`` and returning ``(B, D, H, W)``.
+            grad: If ``False``, freeze the model's parameters.
+        """
         # can be whatever model that takes (B, C, H, W) as input and returns (B, D, H, W)
         self.custom_descriptor = model
         if not grad:
@@ -191,6 +255,16 @@ class MethodWrapper(ABC):
         self.custom_descriptor.to(self.device)
 
     def to_pixel_coords(self, flow: Tensor, h1: int, w1: int) -> Tensor:
+        """Convert normalized ``[-1, 1]`` flow coordinates to pixel coordinates.
+
+        Args:
+            flow: Tensor with last dim ``(x, y)`` in ``[-1, 1]``.
+            h1: Target image height.
+            w1: Target image width.
+
+        Returns:
+            Tensor with last dim ``(x, y)`` in pixels.
+        """
         w_ = w1 * (flow[..., 0] + 1) / 2
         h_ = h1 * (flow[..., 1] + 1) / 2
         flow = torch.stack((w_, h_), axis=-1)
@@ -243,6 +317,19 @@ class MethodWrapper(ABC):
         max_kpts: Union[float, int],
         custom_kpts: Optional[Tensor] = None,
     ) -> MethodOutput:
+        """Extract features and drop keypoints within ``self.border`` of the edge.
+
+        Runs :meth:`_extract` under inference mode, then filters out keypoints
+        too close to the image border.
+
+        Args:
+            img: Input image tensor, ``(C, H, W)`` or ``(B, C, H, W)``.
+            max_kpts: Maximum number of keypoints to extract.
+            custom_kpts: Optional predefined keypoints to describe.
+
+        Returns:
+            A border-filtered :class:`MethodOutput`.
+        """
         if not isinstance(img, Tensor):
             raise TypeError("Input image must be a Tensor")
 
@@ -275,6 +362,18 @@ class MethodWrapper(ABC):
         return geometry.normalize_pixel_coordinates(xy, shape)
 
     def match(self, des0: List[Tensor], des1: List[Tensor]) -> List["Matches"]:
+        """Match two sets of descriptors using the configured matcher.
+
+        Args:
+            des0: Descriptors from the first image(s).
+            des1: Descriptors from the second image(s).
+
+        Returns:
+            The matcher's per-pair :class:`Matches`.
+
+        Raises:
+            ValueError: If no matcher is configured on this wrapper.
+        """
         if self.matcher is None:
             raise ValueError("No matcher defined for this wrapper")
         return self.matcher.match(des0, des1)
@@ -336,6 +435,7 @@ class MethodWrapper(ABC):
             raise ValueError("Provide both mean and std, or neither (for grayscale).")
 
         def to_list(v: Union[Number, Sequence[Number]]) -> List[float]:
+            """Coerce a scalar or sequence into a list of floats."""
             return [float(v)] if isinstance(v, (int, float)) else [float(x) for x in v]
 
         tensors = []
@@ -392,6 +492,18 @@ class MethodWrapper(ABC):
 
     # retrocompatibility
     def img_from_numpy(self, img: np.ndarray, device: str = None) -> Tensor:
+        """Convert an ``HxWxC`` uint8 numpy image to a half-precision CHW tensor.
+
+        Crops to a multiple of the method's patch size (14 for ``-G`` models,
+        else 16), scales to ``[0, 1]``, and moves to the wrapper device.
+
+        Args:
+            img: ``HxWxC`` image in ``[0, 255]``.
+            device: Unused; the wrapper device is always used.
+
+        Returns:
+            A ``(C, H, W)`` float16 tensor on the wrapper device.
+        """
         device = device if device is not None else self.device
 
         s = 14 if self.name.endswith("-G") else 16

@@ -1,3 +1,5 @@
+"""Wrapper for the MASt3R dense 3D-aware matcher."""
+
 import sys
 import warnings
 import torch
@@ -21,11 +23,19 @@ from dust3r.utils.image import load_images
 
 
 class MAST3RWrapper(MethodWrapper):
+    """Wraps the pretrained AsymmetricMASt3R model as a dense pair matcher."""
+
     def __init__(
         self,
         device: str = "cuda:0",
         border: int = 16,
     ) -> None:
+        """Load the pretrained metric AsymmetricMASt3R model.
+
+        Args:
+            device: Torch device to load the model onto.
+            border: Image border margin (pixels) inherited by MethodWrapper.
+        """
         name = "mast3r"
         super().__init__(name=name, border=border, device=device)
         self.is_sparse_feature_extractor = False

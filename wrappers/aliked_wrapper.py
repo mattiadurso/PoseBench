@@ -1,3 +1,5 @@
+"""Wrapper for the ALIKED keypoint detector and descriptor."""
+
 import sys
 import torch
 from pathlib import Path
@@ -12,9 +14,19 @@ from wrappers.wrapper import MethodWrapper, MethodOutput
 
 
 class AlikedWrapper(MethodWrapper):
+    """MethodWrapper adapter around the ALIKED model."""
+
     def __init__(
         self, device: str = "cuda", max_kpts: int = 2048, border: int = 16
     ) -> None:
+        """Initialize the ALIKED wrapper.
+
+        Args:
+            device (str): Torch device to load the model on.
+            max_kpts (int): Maximum number of keypoints; ALIKED requires this to be
+                fixed at construction time (re-initialized in _extract if it changes).
+            border (int): Border margin used to discard keypoints near image edges.
+        """
         super().__init__(name="aliked", border=border, device=device)
         self.max_kpts = max_kpts
 
