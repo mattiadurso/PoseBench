@@ -1,18 +1,11 @@
-import torch
+from typing import Any, Optional, Sequence
+
 import numpy as np
 
-
-def is_torch(vector):
-    """
-    Check if a vector is a torch tensor.
-    """
-    if isinstance(vector, torch.Tensor):
-        return True
-    else:
-        return False
+from common.geometry import is_torch
 
 
-def to_numpy(vector):
+def to_numpy(vector: Any) -> np.ndarray:
     """
     Convert a torch tensor to a numpy array.
     """
@@ -21,7 +14,17 @@ def to_numpy(vector):
     return vector
 
 
-def evaluate_R_err(R_gt, R, deg=True):
+def evaluate_R_err(R_gt: np.ndarray, R: np.ndarray, deg: bool = True) -> float:
+    """Compute the rotation error between two rotation matrices.
+
+    Args:
+        R_gt: Ground-truth rotation matrix (3x3).
+        R: Predicted rotation matrix (3x3).
+        deg: If True, return the error in degrees, otherwise in radians.
+
+    Returns:
+        The rotation error as a Python float.
+    """
     eps = 1e-15
 
     # Make and normalize the quaternions.
@@ -39,15 +42,24 @@ def evaluate_R_err(R_gt, R, deg=True):
         err_q = np.rad2deg(err_q)  # rad*180/np.pi
 
     if np.sum(np.isnan(err_q)):
-        # This should never happen! Debug here
-        import IPython
-
-        IPython.embed()
+        raise ValueError(
+            "NaN encountered while computing the rotation error; check the input poses."
+        )
 
     return err_q.item()
 
 
-def evaluate_t_err(t_gt, t, deg=True):
+def evaluate_t_err(t_gt: np.ndarray, t: np.ndarray, deg: bool = True) -> float:
+    """Compute the angular error between two translation vectors.
+
+    Args:
+        t_gt: Ground-truth translation vector.
+        t: Predicted translation vector.
+        deg: If True, return the error in degrees, otherwise in radians.
+
+    Returns:
+        The translation (angular) error as a Python float.
+    """
     t_gt = to_numpy(t_gt)
     t = to_numpy(t)
     # Flatten
@@ -63,10 +75,9 @@ def evaluate_t_err(t_gt, t, deg=True):
     # err_t = np.arccos(np.clip(np.inner(t,t_gt), -1.0, 1.0)) # Equivalent to above
 
     if np.sum(np.isnan(err_t)):
-        # This should never happen! Debug here
-        import IPython
-
-        IPython.embed()
+        raise ValueError(
+            "NaN encountered while computing the translation error; check the inputs."
+        )
 
     if deg:
         err_t = np.rad2deg(err_t)  # rad*180/np.pi
@@ -74,7 +85,13 @@ def evaluate_t_err(t_gt, t, deg=True):
     return err_t.item()
 
 
-def evaluate_R_t(R_gt, t_gt, R, t, deg=True):
+def evaluate_R_t(
+    R_gt: np.ndarray,
+    t_gt: np.ndarray,
+    R: np.ndarray,
+    t: np.ndarray,
+    deg: bool = True,
+) -> np.ndarray:
     """
     Evaluate the rotation and translation errors between two poses. From IMC2020.
     Args:
@@ -92,7 +109,7 @@ def evaluate_R_t(R_gt, t_gt, R, t, deg=True):
     return np.stack([err_q, err_t])
 
 
-def qvec2rotmat(qvec):
+def qvec2rotmat(qvec: np.ndarray) -> np.ndarray:
     """From COLMAP implementation."""
     return np.array(
         [
@@ -115,7 +132,7 @@ def qvec2rotmat(qvec):
     )
 
 
-def rotmat2qvec(R):
+def rotmat2qvec(R: np.ndarray) -> np.ndarray:
     """From COLMAP implementation."""
     Rxx, Ryx, Rzx, Rxy, Ryy, Rzy, Rxz, Ryz, Rzz = R.flat
     K = (
@@ -136,7 +153,7 @@ def rotmat2qvec(R):
     return qvec
 
 
-def compute_recall(errors):
+def compute_recall(errors: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     """
     Compute the recall for the errors. From Pixel-Perfect SfM.
     Args:
@@ -153,7 +170,11 @@ def compute_recall(errors):
     return errors, recall
 
 
-def compute_AUC(errors, thresholds, min_error=None):
+def compute_AUC(
+    errors: np.ndarray,
+    thresholds: Sequence[float],
+    min_error: Optional[float] = None,
+) -> list[float]:
     """
     Compute the AUC for one array of errors. From Pixel-Perfect SfM.
     Args:
@@ -164,14 +185,18 @@ def compute_AUC(errors, thresholds, min_error=None):
         aucs: list with the AUC values for each threshold.
     Note:
         - It is computed as the defined integral of the recall over the error.
+        - This is NOT the same metric as ``pose_auc`` in
+          ``benchmarks_2D/utils_benchmark.py``. This variant (Pixel-Perfect SfM)
+          scales results to ``[0, 100]``, supports a ``min_error`` floor, and uses
+          ``searchsorted(..., side="right")``. They are intentionally distinct.
     """
-    l = len(errors)
+    n = len(errors)
 
     errors, recall = compute_recall(errors)
 
     if min_error is not None:
         min_index = np.searchsorted(errors, min_error, side="right")
-        min_score = min_index / l
+        min_score = min_index / n
         recall = np.r_[min_score, min_score, recall[min_index:]]
         errors = np.r_[0, min_error, errors[min_index:]]
     else:
@@ -185,6 +210,6 @@ def compute_AUC(errors, thresholds, min_error=None):
         )  # index of the first element >= t
         r = np.r_[recall[:last_index], recall[last_index - 1]]  # error < t
         e = np.r_[errors[:last_index], t]
-        auc = np.trapz(r, x=e) / t  # ?
+        auc = np.trapezoid(r, x=e) / t  # ?
         aucs.append(auc * 100)
     return aucs
