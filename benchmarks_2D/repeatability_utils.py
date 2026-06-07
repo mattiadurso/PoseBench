@@ -1,7 +1,7 @@
 import torch
-import numpy as np
-import torch.nn.functional as F
 from torch import Tensor
+
+from common.geometry import filter_outside, grid_sample_nan
 
 
 def compute_repeatabilities_from_kpts(
@@ -57,12 +57,14 @@ def compute_repeatabilities_from_kpts(
         == Z2.shape[0]
         == P1.shape[0]
         == P2.shape[0]
-    ), f"All the inputs must have the same batch size, got {kpts1.shape[0]}, {kpts2.shape[0]}, {K1.shape[0]}, {K2.shape[0]}, {Z1.shape[0]}, {Z2.shape[0]}, {P1.shape[0]}, {P2.shape[0]}. Images size are assumed to be the same of the depthmaps."
+    ), (
+        f"All the inputs must have the same batch size, got {kpts1.shape[0]}, {kpts2.shape[0]}, {K1.shape[0]}, {K2.shape[0]}, {Z1.shape[0]}, {Z2.shape[0]}, {P1.shape[0]}, {P2.shape[0]}. Images size are assumed to be the same of the depthmaps."
+    )
     if image_names_list is None:
         image_names_list = range(kpts1.shape[0])
-    assert (
-        len(image_names_list) == kpts1.shape[0]
-    ), f"image_names_list must have the same length as the batch size, got {len(image_names_list)} and {kpts1.shape[0]}."
+    assert len(image_names_list) == kpts1.shape[0], (
+        f"image_names_list must have the same length as the batch size, got {len(image_names_list)} and {kpts1.shape[0]}."
+    )
 
     kpts12 = reproject_2D_2D(kpts1, Z1, P1, P2, K1, K2, img2_shape)  # B,n,2
     kpts21 = reproject_2D_2D(kpts2, Z2, P2, P1, K2, K1, img1_shape)  # B,n,2
@@ -104,12 +106,12 @@ def find_distance_matrices_between_points_and_their_projections(
             n0,n1
     """
 
-    assert (
-        xy0.ndim == 2 and xy1.ndim == 2
-    ), f"xy0 and xy1 must be 2D tensors, got {xy0.ndim} and {xy1.ndim}"
-    assert (
-        xy0_proj.ndim == 2 and xy1_proj.ndim == 2
-    ), f"xy0_proj and xy1_proj must be 2D tensors, got {xy0_proj.ndim} and {xy1_proj.ndim}"
+    assert xy0.ndim == 2 and xy1.ndim == 2, (
+        f"xy0 and xy1 must be 2D tensors, got {xy0.ndim} and {xy1.ndim}"
+    )
+    assert xy0_proj.ndim == 2 and xy1_proj.ndim == 2, (
+        f"xy0_proj and xy1_proj must be 2D tensors, got {xy0_proj.ndim} and {xy1_proj.ndim}"
+    )
 
     # ? compute the distance between all the reprojected points
     # # ? low memory usage, slow but correct
@@ -124,6 +126,24 @@ def find_distance_matrices_between_points_and_their_projections(
     dist0[dist0.isnan()] = float("+inf")
     dist1[dist1.isnan()] = float("+inf")
     return dist0, dist1
+
+
+def _assert_mnn_projection_inputs(xy0, xy1, xy0_proj, xy1_proj, dist0, dist1):
+    """Validate shapes for the keypoint/projection mutual-NN computation."""
+    assert xy0.ndim == 2 and xy1.ndim == 2, (
+        f"xy0 and xy1 must be 2D tensors, got {xy0.ndim} and {xy1.ndim}"
+    )
+    assert xy0_proj.ndim == 2 and xy1_proj.ndim == 2, (
+        f"xy0_proj and xy1_proj must be 2D tensors, got {xy0_proj.ndim} and {xy1_proj.ndim}"
+    )
+    if dist0 is not None:
+        assert dist0.shape == (xy0.shape[0], xy1_proj.shape[0]), (
+            f"dist0 must be a matrix of shape ({xy0.shape[0]}, {xy1.shape[0]}), got {dist0.shape}"
+        )
+    if dist1 is not None:
+        assert dist1.shape == (xy0.shape[0], xy1_proj.shape[0]), (
+            f"dist1 must be a matrix of shape ({xy0.shape[0]}, {xy1.shape[0]}), got {dist1.shape}"
+        )
 
 
 def find_mutual_nearest_neighbors_from_keypoints_and_their_projections(
@@ -160,22 +180,7 @@ def find_mutual_nearest_neighbors_from_keypoints_and_their_projections(
         xy1_closest_dist: for each xy1, the distance to the closest xy0_proj in img1
             n1
     """
-    assert (
-        xy0.ndim == 2 and xy1.ndim == 2
-    ), f"xy0 and xy1 must be 2D tensors, got {xy0.ndim} and {xy1.ndim}"
-    assert (
-        xy0_proj.ndim == 2 and xy1_proj.ndim == 2
-    ), f"xy0_proj and xy1_proj must be 2D tensors, got {xy0_proj.ndim} and {xy1_proj.ndim}"
-    if dist0 is not None:
-        assert dist0.shape == (
-            xy0.shape[0],
-            xy1_proj.shape[0],
-        ), f"dist0 must be a matrix of shape ({xy0.shape[0]}, {xy1.shape[0]}), got {dist0.shape}"
-    if dist1 is not None:
-        assert dist1.shape == (
-            xy0.shape[0],
-            xy1_proj.shape[0],
-        ), f"dist1 must be a matrix of shape ({xy0.shape[0]}, {xy1.shape[0]}), got {dist1.shape}"
+    _assert_mnn_projection_inputs(xy0, xy1, xy0_proj, xy1_proj, dist0, dist1)
 
     device = xy0.device
 
@@ -191,15 +196,17 @@ def find_mutual_nearest_neighbors_from_keypoints_and_their_projections(
         # ? find the closest point in the image between each xy0 and xy1_proj
         xy0_closest_dist, closest0 = dist0.min(1)
     else:
-        xy0_closest_dist, closest0 = torch.zeros((0,), device=device), torch.zeros(
-            (0,), dtype=torch.long, device=device
+        xy0_closest_dist, closest0 = (
+            torch.zeros((0,), device=device),
+            torch.zeros((0,), dtype=torch.long, device=device),
         )  # n0
     if n0 > 0:
         # ? find the closest point in the image between each xy1 and xy0_proj
         xy1_closest_dist, closest1 = dist1.min(0)
     else:
-        xy1_closest_dist, closest1 = torch.zeros((0,), device=device), torch.zeros(
-            (0,), dtype=torch.long, device=device
+        xy1_closest_dist, closest1 = (
+            torch.zeros((0,), device=device),
+            torch.zeros((0,), dtype=torch.long, device=device),
         )  # n1
 
     xy0_closest_matrix = torch.zeros(dist0.shape, dtype=torch.bool, device=device)
@@ -224,6 +231,11 @@ def find_mutual_nearest_neighbors_from_keypoints_and_their_projections(
     )
 
 
+def _count_within(dist: Tensor, thr: float) -> int:
+    """Count entries of ``dist`` within ``thr`` (0 if empty)."""
+    return (dist <= thr).sum().item() if dist.shape[0] > 0 else 0
+
+
 def compute_repeatabilities(
     xy0: Tensor,
     xy1: Tensor,
@@ -231,12 +243,25 @@ def compute_repeatabilities(
     xy1_proj: Tensor,
     px_thrs: float | list[float],
 ) -> tuple[float, float] | tuple[Tensor, Tensor]:
-    assert (
-        xy0.ndim == 2 and xy0.shape[1] == 2
-    ), f"the shape of xy0, xy1 should be (n0,2), but got {xy0.shape}, {xy1.shape}"
-    assert (
-        xy0_proj.ndim == 2 and xy1_proj.ndim == 2
-    ), f"xy0_proj and xy1_proj must be 2D tensors, got {xy0_proj.shape} and {xy1_proj.shape}"
+    """Compute keypoint repeatability at one or more pixel thresholds.
+
+    Args:
+        xy0: Keypoints in image 0, shape ``(n0, 2)``.
+        xy1: Keypoints in image 1, shape ``(n1, 2)``.
+        xy0_proj: Keypoints of image 0 projected into image 1, shape ``(n0, 2)``.
+        xy1_proj: Keypoints of image 1 projected into image 0, shape ``(n1, 2)``.
+        px_thrs: Pixel threshold(s) for counting a repeated keypoint.
+
+    Returns:
+        A tuple ``(rep, rep_mnn)`` of repeatability values (scalars for a single
+        threshold, tensors for a list of thresholds).
+    """
+    assert xy0.ndim == 2 and xy0.shape[1] == 2, (
+        f"the shape of xy0, xy1 should be (n0,2), but got {xy0.shape}, {xy1.shape}"
+    )
+    assert xy0_proj.ndim == 2 and xy1_proj.ndim == 2, (
+        f"xy0_proj and xy1_proj must be 2D tensors, got {xy0_proj.shape} and {xy1_proj.shape}"
+    )
     device = xy0.device
 
     n_valid0 = (~xy0_proj.isnan().any(1)).sum()
@@ -258,27 +283,10 @@ def compute_repeatabilities(
     rep = torch.zeros(len(px_thrs), device=device)
     rep_mnn = torch.zeros(len(px_thrs), device=device)
     for i, px_thr in enumerate(px_thrs):
-        n_close0 = (
-            (xy0_closest_dist <= px_thr).sum().item()
-            if (xy0_closest_dist.shape[0] > 0)
-            else 0
-        )
-        n_close1 = (
-            (xy1_closest_dist <= px_thr).sum().item()
-            if (xy1_closest_dist.shape[0] > 0)
-            else 0
-        )
-
-        n_close0_mnn = (
-            (xy0_closest_dist_mnn <= px_thr).sum().item()
-            if (xy0_closest_dist_mnn.shape[0] > 0)
-            else 0
-        )
-        n_close1_mnn = (
-            (xy1_closest_dist_mnn <= px_thr).sum().item()
-            if (xy1_closest_dist_mnn.shape[0] > 0)
-            else 0
-        )
+        n_close0 = _count_within(xy0_closest_dist, px_thr)
+        n_close1 = _count_within(xy1_closest_dist, px_thr)
+        n_close0_mnn = _count_within(xy0_closest_dist_mnn, px_thr)
+        n_close1_mnn = _count_within(xy1_closest_dist_mnn, px_thr)
 
         rep[i] = (n_close0 + n_close1) / n_valid if n_valid > 0 else 0
         rep_mnn[i] = (n_close0_mnn + n_close1_mnn) / n_valid if n_valid > 0 else 0
@@ -287,91 +295,6 @@ def compute_repeatabilities(
     rep_mnn = rep_mnn[0].item() if rep_mnn.shape[0] == 1 else rep_mnn
 
     return rep, rep_mnn
-
-
-def grid_sample_nan(xy: Tensor, img: Tensor, mode="nearest") -> tuple[Tensor, Tensor]:
-    """pytorch grid_sample with embedded coordinate normalization and grid nan handling (if a nan is present in xy,
-    the output will be nan). Works both with input with shape B,n,2 and B,n0,n1,2
-    xy point that fall outside the image are treated as nan (those which are really close are interpolated using
-    border padding mode)
-    Args:
-        xy: input coordinates (with the convention top-left pixel center at (0.5, 0.5))
-            B,n,2 or B,n0,n1,2
-        img: the image where the sampling is done
-            BxCxHxW or BxHxW
-        mode: the interpolation mode
-    Returns:
-        sampled: the sampled values
-            BxCxN or BxCxN0xN1 (if no C dimension in input BxN or BxN0xN1)
-        mask_img_nan: mask of the points that had a nan in the img. The points xy that were nan appear as false in the
-            mask in the same way as point that had a valid img value. This is done to discriminate between invalid
-            sampling position and valid sampling position with a nan value in the image
-            BxN or BxN0xN1
-    """
-    assert img.dim() in {3, 4}
-    if img.dim() == 3:
-        # ? remove the channel dimension from the result at the end of the function
-        squeeze_result = True
-        img.unsqueeze_(1)
-    else:
-        squeeze_result = False
-
-    assert xy.shape[-1] == 2
-    assert xy.dim() == 3 or xy.dim() == 4
-    B, C, H, W = img.shape
-
-    xy_norm = normalize_pixel_coordinates(xy, img.shape[-2:])  # BxNx2 or BxN0xN1x2
-    # ? set to nan the point that fall out of the second image
-    xy_norm[(xy_norm < -1) + (xy_norm > 1)] = float("nan")
-    if xy.ndim == 3:
-        sampled = F.grid_sample(
-            img,
-            xy_norm[:, :, None, ...],
-            align_corners=False,
-            mode=mode,
-            padding_mode="border",
-        ).view(
-            B, C, xy.shape[1]
-        )  # BxCxN
-    else:
-        sampled = F.grid_sample(
-            img, xy_norm, align_corners=False, mode=mode, padding_mode="border"
-        )  # BxCxN0xN1
-    # ? points xy that are not nan and have nan img. The sum is just to squash the channel dimension
-    mask_img_nan = torch.isnan(sampled.sum(1))  # BxN or BxN0xN1
-    # ? set to nan the sampled values for points xy that were nan (grid_sample consider those as (-1, -1))
-    xy_invalid = xy_norm.isnan().any(-1)  # BxN or BxN0xN1
-    if xy.ndim == 3:
-        sampled[xy_invalid[:, None, :].repeat(1, C, 1)] = float("nan")
-    else:
-        sampled[xy_invalid[:, None, :, :].repeat(1, C, 1, 1)] = float("nan")
-
-    if squeeze_result:
-        img.squeeze_(1)
-        sampled.squeeze_(1)
-
-    return sampled, mask_img_nan
-
-
-def normalize_pixel_coordinates(
-    xy: Tensor, shape: tuple[int, int] | Tensor | np.ndarray
-) -> Tensor:
-    """normalize pixel coordinates from -1 to +1. Being (-1,-1) the exact top left corner of the image
-    the coordinates must be given in a way that the center of pixel is at half coordinates (0.5,0.5)
-    xy ordered as (x, y) and shape ordered as (H, W)
-    Args:
-        xy: input coordinates in order (x,y) with the convention top-left pixel center is at coordinates (0.5, 0.5)
-            ...x2
-        shape: shape of the image in the order (H, W)
-    Returns:
-        xy_norm: normalized coordinates between [-1, 1]
-    """
-    xy_norm = xy.clone()
-    # ? the shape index are flipped because the coordinates are given as x,y but shape is H,W
-    xy_norm[..., 0] = 2 * xy_norm[..., 0] / shape[1]
-    xy_norm[..., 1] = 2 * xy_norm[..., 1] / shape[0]
-    xy_norm -= 1
-    return xy_norm
 
 
 def to_homogeneous(xy: Tensor) -> Tensor:
@@ -482,16 +405,16 @@ def change_reference_3D_points(
         xyz1: the 3D points in the P1 coordinate system
             B,n,3
     """
-    assert (
-        xyz0.shape[0] == P0.shape[0] and xyz0.shape[0] == P1.shape[0]
-    ), f"Expected xyz0 and P0 to have the same batch size, got {xyz0.shape[0]} and {P0.shape[0]}"
+    assert xyz0.shape[0] == P0.shape[0] and xyz0.shape[0] == P1.shape[0], (
+        f"Expected xyz0 and P0 to have the same batch size, got {xyz0.shape[0]} and {P0.shape[0]}"
+    )
     assert xyz0.shape[2] == 3, f"Expected xyz0 to have 3 channels, got {xyz0.shape[2]}"
-    assert (
-        P0.shape[1] == 4 and P0.shape[2] == 4
-    ), f"Expected P0 to have shape Bx4x4, got {P0.shape}"
-    assert (
-        P1.shape[1] == 4 and P1.shape[2] == 4
-    ), f"Expected P1 to have shape Bx4x4, got {P1.shape}"
+    assert P0.shape[1] == 4 and P0.shape[2] == 4, (
+        f"Expected P0 to have shape Bx4x4, got {P0.shape}"
+    )
+    assert P1.shape[1] == 4 and P1.shape[2] == 4, (
+        f"Expected P1 to have shape Bx4x4, got {P1.shape}"
+    )
 
     xyz0_hom = to_homogeneous(xyz0)  # B,n,4
     if cast_to_double:
@@ -507,37 +430,6 @@ def change_reference_3D_points(
         xyz1 = from_homogeneous(xyz1_hom.permute(0, 2, 1))  # B,n,3
 
     return xyz1
-
-
-def filter_outside(
-    xy: Tensor, shape: tuple[int, int] | Tensor | np.ndarray, border: int = 0
-) -> Tensor:
-    """set as nan all the points that are not inside rectangle defined with shape HxW
-    Args:
-        xy: keypoints with coordinate (x, y)
-            (B)xnx2
-        shape: shape where the keypoints should be contained (H, W)
-            2
-        border: the minimum border to apply when masking
-    Returns:
-        Tensor: input keypoints with 'nan' where one of the two coordinates was not contained inside shape
-        xy_filtered     (B)xnx2
-    """
-    assert xy.shape[-1] == 2, f"xy must have last dimension of size 2, got {xy.shape}"
-    assert len(shape) == 2, f"shape must be a tuple of 2 elements, got {shape}"
-    assert border < max(
-        shape
-    ), f"border must be smaller than the smallest shape dimension, got {border} and {shape}"
-
-    xy = xy.clone()
-    outside_mask = (
-        (xy[..., 0] < border)
-        + (xy[..., 0] >= shape[1] - border)
-        + (xy[..., 1] < border)
-        + (xy[..., 1] >= shape[0] - border)
-    )  # (B)xn
-    xy[outside_mask] = float("nan")
-    return xy
 
 
 def project_to_2D(
@@ -630,9 +522,9 @@ def reproject_2D_2D(
         )  # Bxn, Bxn
     else:
         # pre-sampled depths
-        assert (
-            depthmap0.shape == xy0.shape[:2]
-        ), f"If depthmap0 is not BxHxW, it must be Bxn, got {depthmap0.shape} and {xy0.shape}"
+        assert depthmap0.shape == xy0.shape[:2], (
+            f"If depthmap0 is not BxHxW, it must be Bxn, got {depthmap0.shape} and {xy0.shape}"
+        )
         selected_depths0 = depthmap0
 
     # ? use the depth to define the 3D coordinates of points in the ref system of camera0

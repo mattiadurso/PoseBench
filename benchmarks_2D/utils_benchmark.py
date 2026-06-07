@@ -7,18 +7,33 @@ import argparse
 import numpy as np
 import torch.nn.functional as F
 
-from typing import List, Dict, Iterable, Optional, Mapping
+from pathlib import Path
+from typing import (
+    Any,
+    Dict,
+    Iterable,
+    List,
+    Mapping,
+    Optional,
+    Sequence,
+    Tuple,
+    TYPE_CHECKING,
+    Union,
+)
+
+if TYPE_CHECKING:
+    from wrappers.wrapper import MethodWrapper
 
 # Setup logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 
-def fake_tqdm(x, **kwargs):
+def fake_tqdm(x: Any, **kwargs: Any) -> Any:
     return x
 
 
-def parse_poses(poses_file, benchmark_name):
+def parse_poses(poses_file: Union[str, Path], benchmark_name: str) -> dict:
     """Parse poses from a given file based on the benchmark format."""
     if benchmark_name in [
         "megadepth1500",
@@ -35,7 +50,9 @@ def parse_poses(poses_file, benchmark_name):
         raise ValueError(f"Unknown benchmark name: {benchmark_name}")
 
 
-def load_depth(depth_path, scale_factor, target):
+def load_depth(
+    depth_path: Union[str, Path], scale_factor: float, target: torch.Tensor
+) -> torch.Tensor:
     """Load depth data from a given file."""
     device, dtype = target.device, target.dtype
     depth = torch.tensor(h5py.File(depth_path, "r")["depth"][()], device=device).float()
@@ -54,8 +71,7 @@ def load_depth(depth_path, scale_factor, target):
     return depth.to(device=device, dtype=dtype)
 
 
-def parse_md1500_poses(poses_file):
-
+def parse_md1500_poses(poses_file: Union[str, Path]) -> dict:
     with open(poses_file, "r") as f:
         lines = f.readlines()
 
@@ -90,71 +106,79 @@ def parse_md1500_poses(poses_file):
     return view_dict
 
 
-def process_pose_estimation(pair_matches_data, th, seed=0):
-    """Process pose estimation for a batch of pairs."""
+def _solve_pair_pose(
+    matches: Union[np.ndarray, torch.Tensor],
+    kpts1: np.ndarray,
+    kpts2: np.ndarray,
+    K1: np.ndarray,
+    K2: np.ndarray,
+    th: float,
+) -> Optional[tuple]:
+    """Solve the relative pose for one matched pair.
+
+    Returns ``(R, t, inlier_mask)`` from :func:`estimate_pose`, or ``None`` for
+    degenerate geometry. Matches are shuffled to decorrelate RANSAC sampling order.
+    """
+    matched_kpts1 = kpts1[matches[:, 0]]
+    matched_kpts2 = kpts2[matches[:, 1]]
+
+    shuffling = np.random.permutation(len(matched_kpts1))
+    matched_kpts1 = matched_kpts1[shuffling]
+    matched_kpts2 = matched_kpts2[shuffling]
+
+    norm_threshold = th / (np.mean(np.abs(K1[:2, :2])) + np.mean(np.abs(K2[:2, :2])))
+    return estimate_pose(
+        matched_kpts1, matched_kpts2, K1, K2, norm_threshold, conf=0.99999
+    )
+
+
+def process_pose_estimation(
+    pair_matches_data: tuple, th: float, seed: int = 0
+) -> tuple:
+    """Estimate the relative pose for a single image pair.
+
+    Returns the per-pair result tuple ``(img1, img2, e_t, e_R, e_pose, inliers)``.
+    A pair that cannot be solved yields the 180-degree sentinel result so the
+    benchmark keeps going; such failures are logged at WARNING so they stay
+    visible rather than being silently swallowed.
+    """
     fix_rng(seed)
 
-    results = []
-
     (img1, img2), matches, kpts1, kpts2, K1, K2, R, t = pair_matches_data
+    failure_result = (img1, img2, 180, 180, 180, 0)
+
+    if len(matches) < 5:
+        logger.warning(
+            "Pair (%s, %s) failed: only %d matches (need >= 5).", img1, img2, len(matches)
+        )
+        return failure_result
+
     try:
-        if len(matches) < 5:
-            return (img1, img2, 180, 180, 180, 0)
+        pose = _solve_pair_pose(matches, kpts1, kpts2, K1, K2, th)
+    except Exception as e:  # unexpected: surface it, don't hide at debug level
+        logger.warning("Pair (%s, %s) raised during pose estimation: %s", img1, img2, e)
+        return failure_result
 
-        # Get matched keypoints
-        matched_kpts1 = kpts1[matches[:, 0]]
-        matched_kpts2 = kpts2[matches[:, 1]]
+    # estimate_pose returns None for degenerate geometry; handle it explicitly
+    # instead of letting the unpacking raise and be swallowed above.
+    if pose is None:
+        logger.warning("Pair (%s, %s) failed: no valid pose recovered.", img1, img2)
+        return failure_result
 
-        # Shuffle matches
-        shuffling = np.random.permutation(len(matched_kpts1))
-        matched_kpts1 = matched_kpts1[shuffling]
-        matched_kpts2 = matched_kpts2[shuffling]
+    R_est, t_est, mask = pose
+    T1_to_2_est = np.concatenate((R_est, t_est), axis=-1)
+    e_t, e_R = compute_pose_error(T1_to_2_est, R, t)
+    e_pose = min(10.0, max(e_t, e_R))
+    num_inliers = np.sum(mask)
 
-        # Pose estimation
-        threshold = th
-        norm_threshold = threshold / (
-            np.mean(np.abs(K1[:2, :2])) + np.mean(np.abs(K2[:2, :2]))
-        )
-
-        R_est, t_est, mask = estimate_pose(
-            matched_kpts1, matched_kpts2, K1, K2, norm_threshold, conf=0.99999
-        )
-
-        T1_to_2_est = np.concatenate((R_est, t_est), axis=-1)
-        e_t, e_R = compute_pose_error(T1_to_2_est, R, t)
-        e_pose = min(10.0, max(e_t, e_R))
-        num_inliers = np.sum(mask)
-
-        results = (img1, img2, e_t, e_R, e_pose, num_inliers)
-        logger.debug(
-            f"Pair ({img1}, {img2}): e_t={e_t:.2f}, e_R={e_R:.2f}, e_pose={e_pose:.2f}, inliers={num_inliers}"
-        )
-
-    except Exception as e:
-        results = (img1, img2, 180, 180, 180, 0)
-
-        logging.debug(f"Error processing pair ({img1}, {img2}): {e}")
-
-    return results
+    logger.debug(
+        f"Pair ({img1}, {img2}): e_t={e_t:.2f}, e_R={e_R:.2f}, "
+        f"e_pose={e_pose:.2f}, inliers={num_inliers}"
+    )
+    return (img1, img2, e_t, e_R, e_pose, num_inliers)
 
 
-def convert_numpy_types(obj):
-    """Convert numpy types to native Python types for JSON serialization."""
-    if isinstance(obj, np.integer):
-        return int(obj)
-    elif isinstance(obj, np.floating):
-        return float(obj)
-    elif isinstance(obj, np.ndarray):
-        return obj.tolist()
-    elif isinstance(obj, dict):
-        return {key: convert_numpy_types(value) for key, value in obj.items()}
-    elif isinstance(obj, list):
-        return [convert_numpy_types(item) for item in obj]
-    else:
-        return obj
-
-
-def str2bool(v):
+def str2bool(v: Union[str, bool]) -> bool:
     if isinstance(v, bool):
         return v
     if v.lower() in ("yes", "true", "t", "y", "1"):
@@ -165,7 +189,7 @@ def str2bool(v):
         raise argparse.ArgumentTypeError("Boolean value expected.")
 
 
-def fix_rng(seed=42):
+def fix_rng(seed: int = 42) -> None:
     """Set seeds for reproducibility"""
     torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.benchmark = False
@@ -193,7 +217,7 @@ def fix_rng(seed=42):
     random.seed(seed)
 
 
-def parse_pair(pair, benchmark_name):
+def parse_pair(pair: str, benchmark_name: str) -> tuple:
     """Parse a line from a .pairs file"""
     if benchmark_name in [
         "megadepth1500",
@@ -229,7 +253,7 @@ def parse_pair(pair, benchmark_name):
     return img1, img2, K1, K2, R, t
 
 
-def print_metrics(wrapper, metrics: dict):
+def print_metrics(wrapper: "MethodWrapper", metrics: dict) -> None:
     """Pretty print metrics from a benchmark wrapper"""
     print(f"\nEvaluation results for {wrapper.name}:")
     for k, v in metrics.items():
@@ -239,7 +263,7 @@ def print_metrics(wrapper, metrics: dict):
             print(f"{k:<8}: {v:.1f}")
 
 
-def get_best_device(verbose=False):
+def get_best_device(verbose: bool = False) -> str:
     """Get the best available device (GPU if available, else CPU)"""
     if torch.cuda.is_available():
         device = "cuda"
@@ -252,8 +276,20 @@ def get_best_device(verbose=False):
     return device
 
 
-def estimate_pose(kpts0, kpts1, K0, K1, norm_thresh, conf=0.999999, maxIters=10_000):
-    """Estimate pose using essential matrix"""
+def estimate_pose(
+    kpts0: np.ndarray,
+    kpts1: np.ndarray,
+    K0: np.ndarray,
+    K1: np.ndarray,
+    norm_thresh: float,
+    conf: float = 0.999999,
+    maxIters: int = 10_000,
+) -> Optional[tuple]:
+    """Estimate pose using essential matrix.
+
+    Returns ``(R, t, inlier_mask)`` or ``None`` when no valid pose can be
+    recovered (fewer than 5 points, or a degenerate essential matrix).
+    """
     if len(kpts0) < 5:
         return None
     K0inv = np.linalg.inv(K0[:2, :2])
@@ -283,20 +319,22 @@ def estimate_pose(kpts0, kpts1, K0, K1, norm_thresh, conf=0.999999, maxIters=10_
     return ret
 
 
-def angle_error_mat(R1, R2):
+def angle_error_mat(R1: np.ndarray, R2: np.ndarray) -> float:
     """Compute angle error between two rotation matrices"""
     cos = (np.trace(np.dot(R1.T, R2)) - 1) / 2
     cos = np.clip(cos, -1.0, 1.0)  # numerical errors can make it out of bounds
     return np.rad2deg(np.abs(np.arccos(cos)))
 
 
-def angle_error_vec(v1, v2):
+def angle_error_vec(v1: np.ndarray, v2: np.ndarray) -> float:
     """Compute angle error between two vectors"""
     n = np.linalg.norm(v1) * np.linalg.norm(v2)
     return np.rad2deg(np.arccos(np.clip(np.dot(v1, v2) / n, -1.0, 1.0)))
 
 
-def compute_pose_error(T_0to1, R, t):
+def compute_pose_error(
+    T_0to1: np.ndarray, R: np.ndarray, t: np.ndarray
+) -> Tuple[float, float]:
     """Compute pose error given ground truth and estimated pose"""
     R_gt = T_0to1[:3, :3]
     t_gt = T_0to1[:3, 3]
@@ -306,8 +344,15 @@ def compute_pose_error(T_0to1, R, t):
     return error_t, error_R
 
 
-def pose_auc(errors, thresholds):
-    """Compute AUC for pose estimation"""
+def pose_auc(errors: np.ndarray, thresholds: Sequence[float]) -> List[float]:
+    """Compute AUC for pose estimation.
+
+    Note:
+        This is the 2D-benchmark pose AUC and is NOT the same metric as
+        ``compute_AUC`` in ``benchmarks_3D/utils_benchmark_pose.py``. This version
+        returns values in ``[0, 1]`` and uses ``searchsorted`` with the default
+        ``side="left"``; they are intentionally distinct.
+    """
     sort_idx = np.argsort(errors)
     errors = np.array(errors.copy())[sort_idx]
     recall = (np.arange(len(errors)) + 1) / len(errors)
@@ -318,14 +363,92 @@ def pose_auc(errors, thresholds):
         last_index = np.searchsorted(errors, t)
         r = np.r_[recall[:last_index], recall[last_index - 1]]
         e = np.r_[errors[:last_index], t]
-        aucs.append(np.trapz(r, x=e) / t)
+        aucs.append(np.trapezoid(r, x=e) / t)
     return aucs
 
 
-def compute_relative_pose(R1, t1, R2, t2):
-    rots = R2 @ (R1.T)
-    trans = -rots @ t1 + t2
-    return rots, trans
+def _is_numeric_value(v: object) -> bool:
+    """True if ``v`` is a number or a non-empty numeric-looking string."""
+    if isinstance(v, (int, float)):
+        return True
+    if isinstance(v, str) and v.strip():
+        try:
+            float(v)
+            return True
+        except ValueError:
+            return False
+    return False
+
+
+def _detect_numeric_cols(
+    rows: List[Dict[str, object]],
+    cols: List[str],
+    left_align: set,
+    right_align: set,
+    fill_missing: str,
+) -> set:
+    """Columns whose every non-empty value is numeric (skipping forced-align cols)."""
+    numeric_cols = set()
+    for c in cols:
+        if c in left_align or c in right_align:
+            continue
+        is_numeric = True
+        for r in rows:
+            v = r.get(c, fill_missing)
+            if v == fill_missing or v is None or (isinstance(v, str) and v == ""):
+                continue
+            if not _is_numeric_value(v):
+                is_numeric = False
+                break
+        if is_numeric:
+            numeric_cols.add(c)
+    return numeric_cols
+
+
+def _format_cell(v: object, float_format: str) -> str:
+    """Format floats with ``float_format``; everything else via ``str()``."""
+    if isinstance(v, float):
+        return format(v, float_format)
+    return str(v)
+
+
+def _column_widths(
+    rows: List[Dict[str, object]],
+    cols: List[str],
+    min_widths: Mapping[str, int],
+    float_format: str,
+    fill_missing: str,
+) -> Dict[str, int]:
+    """Width per column from header, ``min_widths``, and unclipped formatted cells."""
+    widths = {c: max(len(str(c)), min_widths.get(c, 0)) for c in cols}
+    for r in rows:
+        for c in cols:
+            cell = _format_cell(r.get(c, fill_missing), float_format)
+            widths[c] = max(widths[c], len(cell))
+    return widths
+
+
+def _clip(s: str, maxw: Optional[int]) -> str:
+    """Clip ``s`` to ``maxw`` chars with a trailing ellipsis (no-op if ``maxw`` falsy)."""
+    if maxw is None or maxw <= 0 or len(s) <= maxw:
+        return s
+    return s[: max(0, maxw - 1)] + "…"
+
+
+def _align(
+    s: str,
+    col: str,
+    width: int,
+    left_align: set,
+    right_align: set,
+    numeric_cols: set,
+) -> str:
+    """Right-align forced/numeric columns, left-align everything else."""
+    if col in right_align:
+        return s.rjust(width)
+    if col in left_align or col not in numeric_cols:
+        return s.ljust(width)
+    return s.rjust(width)
 
 
 def print_table(
@@ -360,93 +483,24 @@ def print_table(
         print("(empty)")
         return
 
-    # Column order
     cols = list(columns) if columns is not None else list(rows[0].keys())
-
-    # Alignment sets
     left_align = set(left_align or ())
     right_align = set(right_align or ())
-
-    # Detect numeric columns if not explicitly aligned
-    def is_numeric_value(v: object) -> bool:
-        if isinstance(v, (int, float)):
-            return True
-        # Accept numeric-looking strings, ignore empty/missing
-        if isinstance(v, str) and v.strip():
-            try:
-                float(v)
-                return True
-            except ValueError:
-                return False
-        return False
-
-    numeric_cols = set()
-    for c in cols:
-        # If user forced alignment, skip auto-detect for that col
-        if c in left_align or c in right_align:
-            continue
-        # Numeric if every non-empty value parses as number
-        is_numeric = True
-        for r in rows:
-            v = r.get(c, fill_missing)
-            if v == fill_missing or v is None or (isinstance(v, str) and v == ""):
-                continue
-            if not is_numeric_value(v):
-                is_numeric = False
-                break
-        if is_numeric:
-            numeric_cols.add(c)
-
-    # Widths
     min_widths = dict(min_widths or {})
-    widths = {c: max(len(str(c)), min_widths.get(c, 0)) for c in cols}
-
-    def format_cell(v: object, col: str) -> str:
-        # Numeric formatting
-        if isinstance(v, float):
-            return format(v, float_format)
-        # Numeric-looking strings: leave as-is (assumed already formatted)
-        return str(v)
-
-    # Compute widths from data
-    for r in rows:
-        for c in cols:
-            v = r.get(c, fill_missing)
-            s = format_cell(v, c)
-            widths[c] = max(widths[c], len(s))
-
-    # Apply clipping limits
     clip_widths = dict(clip_widths or {})
 
-    def clip(s: str, w: int, maxw: Optional[int]) -> str:
-        if maxw is None or maxw <= 0 or len(s) <= maxw:
-            return s
-        # keep room for ellipsis
-        return s[: max(0, maxw - 1)] + "…"
+    numeric_cols = _detect_numeric_cols(
+        rows, cols, left_align, right_align, fill_missing
+    )
+    widths = _column_widths(rows, cols, min_widths, float_format, fill_missing)
 
-    # Render header
-    def align_text(s: str, col: str) -> str:
-        # Priority: explicit align → auto numeric → default left
-        if col in right_align:
-            return s.rjust(widths[col])
-        if col in left_align or col not in numeric_cols:
-            return s.ljust(widths[col])
-        return s.rjust(widths[col])
+    def render(value: object, col: str) -> str:
+        s = _clip(_format_cell(value, float_format), clip_widths.get(col))
+        return _align(s, col, widths[col], left_align, right_align, numeric_cols)
 
     if header:
-        hdr = sep.join(
-            align_text(clip(str(c), widths[c], clip_widths.get(c)), c) for c in cols
-        )
-        bar = sep.join("-" * widths[c] for c in cols)
-        print(hdr)
-        print(bar)
+        print(sep.join(render(c, c) for c in cols))
+        print(sep.join("-" * widths[c] for c in cols))
 
-    # Render rows
     for r in rows:
-        cells = []
-        for c in cols:
-            raw = r.get(c, fill_missing)
-            s = format_cell(raw, c)
-            s = clip(s, widths[c], clip_widths.get(c))
-            cells.append(align_text(s, c))
-        print(sep.join(cells))
+        print(sep.join(render(r.get(c, fill_missing), c) for c in cols))

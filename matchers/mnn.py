@@ -75,16 +75,16 @@ class MatchingMatrixExtra:
     unsure: Tensor | None = None  # (B),n0,n1 bool
     score: Tensor | None = None  # (B),n0,n1 float
 
-    def shape(self):
+    def shape(self) -> th.Size:
         return self.proposed.shape
 
-    def __repr__(self):
+    def __repr__(self) -> str:
         return f"MatchingMatrixExtra [{tuple(self.shape())}]  device: {self.proposed.device}"
 
-    def __getitem__(self, b: int = 0):
-        assert (
-            len(self.shape()) >= 3
-        ), "MatchingMatrix must have at least 3 dimensions to be sliced"
+    def __getitem__(self, b: int = 0) -> MatchingMatrixExtra:
+        assert len(self.shape()) >= 3, (
+            "MatchingMatrix must have at least 3 dimensions to be sliced"
+        )
         return MatchingMatrixExtra(
             proposed=self.proposed[b],
             correct=self.correct[b] if self.correct is not None else None,
@@ -95,7 +95,7 @@ class MatchingMatrixExtra:
             score=self.score[b] if self.score is not None else None,
         )
 
-    def to(self, device: str):
+    def to(self, device: str) -> MatchingMatrixExtra:
         self.proposed = self.proposed.to(device)
         self.correct = self.correct.to(device) if self.correct is not None else None
         self.wrong = self.wrong.to(device) if self.wrong is not None else None
@@ -109,7 +109,7 @@ class MatchingMatrixExtra:
         self.score = self.score.to(device) if self.score is not None else None
         return self
 
-    def cpu(self):
+    def cpu(self) -> MatchingMatrixExtra:
         return self.to("cpu")
 
 
@@ -127,7 +127,9 @@ class Matches:
         output[self.matches[:, 0], self.matches[:, 1]] = True
         return output
 
-    def _compute_matching_matrix_extra(self, matching_matrix_GT_with_bins: Tensor):
+    def _compute_matching_matrix_extra(
+        self, matching_matrix_GT_with_bins: Tensor
+    ) -> None:
         self.matching_matrix_GT_with_bins = matching_matrix_GT_with_bins
         self.matching_matrix_extra = (
             compute_correct_wrong_mismatched_inexistent_unsure_matches(
@@ -143,162 +145,107 @@ class Matches:
             matching_matrix_GT_with_bins:
                 n0+1,n1+1
         """
-        assert (
-            matching_matrix_GT_with_bins.ndim == 2
-        ), f"expected 2D tensor, got {matching_matrix_GT_with_bins.ndim}D"
-        assert (
-            matching_matrix_GT_with_bins.shape[0] == self.score_matrix.shape[0] + 1
-        ), f"expected {self.score_matrix.shape[0] + 1} rows, got {matching_matrix_GT_with_bins.shape[0]}"
-        assert (
-            matching_matrix_GT_with_bins.shape[1] == self.score_matrix.shape[1] + 1
-        ), f"expected {self.score_matrix.shape[1] + 1} cols, got {matching_matrix_GT_with_bins.shape[1]}"
-
+        self._assert_gt_with_bins_shape(matching_matrix_GT_with_bins)
         self._compute_matching_matrix_extra(matching_matrix_GT_with_bins)
-        stats = {}
 
-        n_matches_GT = matching_matrix_GT_with_bins[:-1, :-1].sum().item()
-        n_matches_proposed = self.matching_matrix_extra.proposed.sum().item()
-        n_matches_correct = self.matching_matrix_extra.correct.sum().item()
-        stats["n_matches_GT"] = n_matches_GT
-        stats["n_matches_proposed"] = n_matches_proposed
-        stats["n_matches_correct"] = n_matches_correct
-        stats["n_matches_wrong"] = self.matching_matrix_extra.wrong.sum().item()
-        stats["n_matches_mismatched"] = (
-            self.matching_matrix_extra.mismatched.sum().item()
-        )
-        stats["n_matches_inexistent"] = (
-            self.matching_matrix_extra.inexistent.sum().item()
-        )
-        stats["n_matches_unsure"] = self.matching_matrix_extra.unsure.sum().item()
-
-        stats["mean_GT_score"] = (
-            self.score_matrix[matching_matrix_GT_with_bins[:-1, :-1]].mean().item()
-        )
-        stats["mean_proposed_score"] = (
-            self.score_matrix[self.matching_matrix_extra.proposed].mean().item()
-        )
-        stats["mean_correct_score"] = (
-            self.score_matrix[self.matching_matrix_extra.correct].mean().item()
-        )
-        stats["mean_wrong_score"] = (
-            self.score_matrix[self.matching_matrix_extra.wrong].mean().item()
-        )
-        stats["mean_mismatched_score"] = (
-            self.score_matrix[self.matching_matrix_extra.mismatched].mean().item()
-        )
-        stats["mean_inexistent_score"] = (
-            self.score_matrix[self.matching_matrix_extra.inexistent].mean().item()
-        )
-        stats["mean_unsure_score"] = (
-            self.score_matrix[self.matching_matrix_extra.unsure].mean().item()
-        )
-        stats["mean_matching_matrix_score"] = self.score_matrix.mean().item()
-
-        stats["matches_precision"] = (
-            n_matches_correct / n_matches_proposed if n_matches_proposed > 0 else 0.0
-        )
-        stats["matches_recall"] = (
-            n_matches_correct / n_matches_GT if n_matches_GT > 0 else 0.0
-        )
-
-        # > compute the margins and ratios
         score_matrix_with_inf = self.score_matrix.clone()
         score_matrix_with_inf[score_matrix_with_inf.isnan()] = float("-inf")
+
+        stats = self._count_and_score_stats(matching_matrix_GT_with_bins)
+        stats.update(self._margin_ratio_stats(score_matrix_with_inf))
+        stats["n_masked"] = self._n_masked(score_matrix_with_inf)
+        return stats
+
+    def _assert_gt_with_bins_shape(self, gt: Tensor) -> None:
+        """Validate that the GT matching matrix has bins matching the score matrix."""
+        assert gt.ndim == 2, f"expected 2D tensor, got {gt.ndim}D"
+        assert gt.shape[0] == self.score_matrix.shape[0] + 1, (
+            f"expected {self.score_matrix.shape[0] + 1} rows, got {gt.shape[0]}"
+        )
+        assert gt.shape[1] == self.score_matrix.shape[1] + 1, (
+            f"expected {self.score_matrix.shape[1] + 1} cols, got {gt.shape[1]}"
+        )
+
+    def _count_and_score_stats(self, gt: Tensor) -> dict[str, float]:
+        """Match counts, mean scores per category, and precision/recall."""
+        extra = self.matching_matrix_extra
+        n_gt = gt[:-1, :-1].sum().item()
+        n_proposed = extra.proposed.sum().item()
+        n_correct = extra.correct.sum().item()
+        return {
+            "n_matches_GT": n_gt,
+            "n_matches_proposed": n_proposed,
+            "n_matches_correct": n_correct,
+            "n_matches_wrong": extra.wrong.sum().item(),
+            "n_matches_mismatched": extra.mismatched.sum().item(),
+            "n_matches_inexistent": extra.inexistent.sum().item(),
+            "n_matches_unsure": extra.unsure.sum().item(),
+            "mean_GT_score": self.score_matrix[gt[:-1, :-1]].mean().item(),
+            "mean_proposed_score": self.score_matrix[extra.proposed].mean().item(),
+            "mean_correct_score": self.score_matrix[extra.correct].mean().item(),
+            "mean_wrong_score": self.score_matrix[extra.wrong].mean().item(),
+            "mean_mismatched_score": self.score_matrix[extra.mismatched].mean().item(),
+            "mean_inexistent_score": self.score_matrix[extra.inexistent].mean().item(),
+            "mean_unsure_score": self.score_matrix[extra.unsure].mean().item(),
+            "mean_matching_matrix_score": self.score_matrix.mean().item(),
+            "matches_precision": (
+                n_correct / n_proposed if n_proposed > 0 else 0.0
+            ),
+            "matches_recall": n_correct / n_gt if n_gt > 0 else 0.0,
+        }
+
+    def _margin_ratio_stats(self, score_matrix_with_inf: Tensor) -> dict[str, float]:
+        """Mean margin and ratio per match category."""
         best_two_scores0 = th.topk(score_matrix_with_inf, 2, dim=-1)[0]  # (n0,2)
         best_two_scores1 = th.topk(score_matrix_with_inf, 2, dim=-2)[0].T  # (n1,2)
-        best_scores0, second_best_scores0 = (
-            best_two_scores0[:, 0],
-            best_two_scores0[:, 1],
-        )  # (n0), (n0)
+        best_scores0, second_best_scores0 = best_two_scores0[:, 0], best_two_scores0[:, 1]
         # ? best scores1 is not needed as all the matches are mutual nearest neighbors anyway,
-        # ? so in all the following functions the sampled best_scores0 is the same as the sampled best_scores1 by definition
-        _, second_best_scores1 = (
-            best_two_scores1[:, 0],
-            best_two_scores1[:, 1],
-        )  # (n1), (n1)
+        # ? so the sampled best_scores0 is the same as the sampled best_scores1 by definition
+        _, second_best_scores1 = best_two_scores1[:, 0], best_two_scores1[:, 1]
 
-        # ? margin for all the proposed matches
-        margin_proposed, ratio_proposed = (
-            get_margin_and_ratio_from_scores_and_mnn_matrix(
-                self.matching_matrix_extra.proposed,
-                best_scores0,
-                second_best_scores0,
-                second_best_scores1,
+        extra = self.matching_matrix_extra
+        categories = {
+            "proposed": extra.proposed,
+            "correct": extra.correct,
+            "wrong": extra.wrong,
+            "mismatched": extra.mismatched,
+            "inexistent": extra.inexistent,
+        }
+        margins_ratios = {
+            name: get_margin_and_ratio_from_scores_and_mnn_matrix(
+                mat, best_scores0, second_best_scores0, second_best_scores1
             )
+            for name, mat in categories.items()
+        }
+        stats = {
+            f"mean_margin_{name}": margin.mean().item()
+            for name, (margin, _) in margins_ratios.items()
+        }
+        stats.update(
+            {
+                f"mean_ratio_{name}": ratio.mean().item()
+                for name, (_, ratio) in margins_ratios.items()
+            }
         )
-        # ? correct matches margin
-        margin_correct, ratio_correct = get_margin_and_ratio_from_scores_and_mnn_matrix(
-            self.matching_matrix_extra.correct,
-            best_scores0,
-            second_best_scores0,
-            second_best_scores1,
-        )
-        # ? wrong matches margin
-        margin_wrong, ratio_wrong = get_margin_and_ratio_from_scores_and_mnn_matrix(
-            self.matching_matrix_extra.wrong,
-            best_scores0,
-            second_best_scores0,
-            second_best_scores1,
-        )
-        # ? mismatched matches margin
-        margin_mismatched, ratio_mismatched = (
-            get_margin_and_ratio_from_scores_and_mnn_matrix(
-                self.matching_matrix_extra.mismatched,
-                best_scores0,
-                second_best_scores0,
-                second_best_scores1,
-            )
-        )
-        # ? inexistent matches margin
-        margin_inexistent, ratio_inexistent = (
-            get_margin_and_ratio_from_scores_and_mnn_matrix(
-                self.matching_matrix_extra.inexistent,
-                best_scores0,
-                second_best_scores0,
-                second_best_scores1,
-            )
-        )
+        return stats
 
-        stats["mean_margin_proposed"] = margin_proposed.mean().item()
-        stats["mean_margin_correct"] = margin_correct.mean().item()
-        stats["mean_margin_wrong"] = margin_wrong.mean().item()
-        stats["mean_margin_mismatched"] = margin_mismatched.mean().item()
-        stats["mean_margin_inexistent"] = margin_inexistent.mean().item()
-
-        stats["mean_ratio_proposed"] = ratio_proposed.mean().item()
-        stats["mean_ratio_correct"] = ratio_correct.mean().item()
-        stats["mean_ratio_wrong"] = ratio_wrong.mean().item()
-        stats["mean_ratio_mismatched"] = ratio_mismatched.mean().item()
-        stats["mean_ratio_inexistent"] = ratio_inexistent.mean().item()
-
-        # > compute the n masked
+    def _n_masked(self, score_matrix_with_inf: Tensor) -> float:
+        """Count possible matches shielded (masked) by an existing correct match."""
         # ? find out how many possible mismatched have been shielded by a correct match
-        # ? we do this counting how many column have the max score that correspond to a column where there is a correct match
-        matches_correct_idx = (
-            self.matching_matrix_extra.correct.nonzero()
-        )  # n_matches_correct,2
-        # ? we first create a mask with a one in the position where the score is the max for that row
+        # ? counting how many columns have the row-max at a column where there is a correct match
+        matches_correct_idx = self.matching_matrix_extra.correct.nonzero()  # (n_corr,2)
         row_max_mask = (
             score_matrix_with_inf == score_matrix_with_inf.max(dim=-1, keepdim=True)[0]
         ) * score_matrix_with_inf.isfinite()  # n0,n1
-        # ? we then index only the columns where there was a correct match
-        masked_columns = row_max_mask[
-            :, matches_correct_idx[:, -1]
-        ].T  # n_masked_columns,n0
-        # ? and sum over those columns (subtracting always one as we do not want to count the correct match)
+        masked_columns = row_max_mask[:, matches_correct_idx[:, -1]].T
         n_masked_by_columns = masked_columns.sum() - masked_columns.shape[0]
         # ? do the same by columns
         column_max_mask = (
             score_matrix_with_inf == score_matrix_with_inf.max(dim=-2, keepdim=True)[0]
         ) * score_matrix_with_inf.isfinite()  # (n0,n1)
-        masked_rows = column_max_mask[
-            matches_correct_idx[:, -2], :
-        ]  # n_masked_rows, n1
+        masked_rows = column_max_mask[matches_correct_idx[:, -2], :]
         n_masked_by_rows = masked_rows.sum() - masked_rows.shape[0]
-        n_masked = n_masked_by_columns + n_masked_by_rows
-        stats["n_masked"] = n_masked.item()
-
-        return stats
+        return (n_masked_by_columns + n_masked_by_rows).item()
 
     def to(self, device: str) -> Matches:
         self.matches = self.matches.to(device)
@@ -313,7 +260,7 @@ class Matches:
     def cpu(self) -> Matches:
         return self.to("cpu")
 
-    def __repr__(self):
+    def __repr__(self) -> str:
         return f"Matches [{tuple(self.matches.shape)}]  device: {self.matches.device}"
 
     @property
@@ -322,12 +269,13 @@ class Matches:
 
 
 class Matcher(ABC):
-    def __int__(self):
+    def __init__(self) -> None:
         super().__init__()
         self.name = "Matcher"
 
     @abstractmethod
     def match(self, des0: list[Tensor], des1: list[Tensor]) -> list[Matches]:
+        """Match two batches of descriptors and return one ``Matches`` per pair."""
         raise NotImplementedError
 
     @abstractmethod
@@ -336,7 +284,9 @@ class Matcher(ABC):
 
 
 class MNN(Matcher):
-    def __init__(self, min_score: float, ratio_test: float = 1.0, device: str = "cpu"):
+    def __init__(
+        self, min_score: float, ratio_test: float = 1.0, device: str = "cpu"
+    ) -> None:
         self.min_score = min_score
         self.ratio_test = ratio_test
         self.device = device
@@ -348,6 +298,15 @@ class MNN(Matcher):
             self.name = f"{self.name}-ratiotest{self.ratio_test}"
 
     def match(self, des0: list[Tensor], des1: list[Tensor]) -> list[Matches]:
+        """Mutual-nearest-neighbor match each descriptor pair in the batch.
+
+        Args:
+            des0: List (batch) of descriptor tensors ``(n0, dim)`` from image 0.
+            des1: List (batch) of descriptor tensors ``(n1, dim)`` from image 1.
+
+        Returns:
+            One ``Matches`` per batch element, holding the matches and score matrix.
+        """
         matches_list, score_matrix_list = match_descriptors_mnn_scores_ratio_test(
             des0, des1, self.min_score, self.ratio_test
         )
@@ -359,6 +318,40 @@ class MNN(Matcher):
 
     def __repr__(self) -> str:
         return self.name
+
+
+def _mutual_nn_mask(score_mat: Tensor) -> Tensor:
+    """Bool mask of positions that are the argmax along both their row and column.
+
+    ``score_mat`` (Bxn0xn1) must already be NaN-free (NaNs replaced by ``-inf``).
+    Rows/columns whose max is ``-inf`` are routed to a throwaway bin so they match
+    nothing.
+    """
+    B, n0, n1 = score_mat.shape
+    device = score_mat.device
+
+    # ? each row scores a descriptor from img0 against all of img1 (and vice-versa)
+    nn0_value, nn0_idx = score_mat.max(2)  # (B,n0) with values [0, n1[
+    nn1_value, nn1_idx = score_mat.max(1)  # (B,n1) with values [0, n0[
+    nn0_idx[nn0_value == float("-inf")] = n1  # route empty rows to the bin
+    nn1_idx[nn1_value == float("-inf")] = n0
+
+    nn0_matrix = th.zeros((B, n0 + 1, n1 + 1), dtype=th.bool, device=device)
+    nn0_matrix[:, :-1, :].scatter_(2, nn0_idx[:, :, None], True)
+    nn1_matrix = th.zeros((B, n0 + 1, n1 + 1), dtype=th.bool, device=device)
+    nn1_matrix[:, :, :-1].scatter_(1, nn1_idx[:, None, :], True)
+
+    # ? compose the two directions, then drop the bin row/column
+    return (nn0_matrix * nn1_matrix)[:, :-1, :-1]
+
+
+def _ratio_test_mask(score_mat: Tensor, ratio_test: float) -> Tensor:
+    """Lowe-style ratio-test mask: best score must beat ``ratio_test`` x second-best."""
+    best_scores0 = score_mat.topk(2, dim=-1, largest=True, sorted=True)[0]  # (B,n0,2)
+    best_scores1 = score_mat.topk(2, dim=-2, largest=True, sorted=True)[0]  # (B,2,n1)
+    valid_mask0 = best_scores0[:, :, 0] * ratio_test > best_scores0[:, :, 1]  # (B,n0)
+    valid_mask1 = best_scores1[:, 0, :] * ratio_test > best_scores1[:, 1, :]  # (B,n1)
+    return valid_mask0[:, :, None] * valid_mask1[:, None, :]
 
 
 def mutual_nearest_neighbors_from_score_matrix(
@@ -379,46 +372,13 @@ def mutual_nearest_neighbors_from_score_matrix(
     if n0 == 0 or n1 == 0:
         return score_mat.new_zeros((B, n0, n1), dtype=th.bool)
 
-    device = score_mat.device
     score_mat = score_mat.clone()
     score_mat[score_mat.isnan()] = float("-inf")
 
-    # ? get the closest ones for each row and column
-    # ? each row is the score between the descriptor from img0 and all the others in img1
-    # ? each column is the score between the descriptor from img1 and all the others in img0
-    nn0_value, nn0_idx = score_mat.max(2)  # (B,n0) (B,n0) with values [0, n1[
-    nn1_value, nn1_idx = score_mat.max(1)  # (B,n1) (B,n1) with values [0, n0[
-
-    nn0_idx[nn0_value == float("-inf")] = n1  # (B,n0) with values [0, n1]
-    nn1_idx[nn1_value == float("-inf")] = n0  # (B,n1) with values [0, n0]
-
-    nn0_matrix = th.zeros((B, n0 + 1, n1 + 1), dtype=th.bool, device=device)  # Bxn0xn1
-    nn0_matrix[:, :-1, :].scatter_(2, nn0_idx[:, :, None], True)
-
-    nn1_matrix = th.zeros((B, n0 + 1, n1 + 1), dtype=th.bool, device=device)  # Bxn0xn1
-    nn1_matrix[:, :, :-1].scatter_(1, nn1_idx[:, None, :], True)
-
-    # ? compose the two matrices
-    mnn_matrix = nn0_matrix * nn1_matrix
-
-    # ? drop the bins
-    mnn_matrix = mnn_matrix[:, :-1, :-1]
-
-    # ? remove the ones with score less than the min score
+    mnn_matrix = _mutual_nn_mask(score_mat)
     mnn_matrix = mnn_matrix * (score_mat > min_score)
-
     if ratio_test < 1.0:
-        best_scores0, idxs0 = score_mat.topk(
-            2, dim=-1, largest=True, sorted=True
-        )  # (B,n0,2) (B,n0,2)
-        best_scores1, idxs1 = score_mat.topk(
-            2, dim=-2, largest=True, sorted=True
-        )  # (B,2,n1) (B,2,n1)
-        valid_mask0 = best_scores0[:, :, 0] * ratio_test > best_scores0[:, :, 1]  # B,n0
-        valid_mask1 = best_scores1[:, 0, :] * ratio_test > best_scores1[:, 1, :]  # n1
-        ratio_test_mat = valid_mask0[:, :, None] * valid_mask1[:, None, :]
-        mnn_matrix *= ratio_test_mat
-
+        mnn_matrix = mnn_matrix * _ratio_test_mask(score_mat, ratio_test)
     return mnn_matrix
 
 
@@ -497,14 +457,53 @@ def match_descriptors_mnn_scores_ratio_test(
                 score_matrix[score_matrix.isnan()] = -1
             matches_mat = mutual_nearest_neighbors_from_score_matrix(
                 score_matrix[None], min_score=min_score, ratio_test=ratio_test
-            )[
-                0
-            ]  # n0 x n1
+            )[0]  # n0 x n1
 
             matches = th.nonzero(matches_mat)
         matches_list.append(matches)
         score_matrix_list.append(score_matrix)
     return matches_list, score_matrix_list
+
+
+def _assert_ccw_inputs(
+    matching_matrix: Tensor, GT_matching_matrix_with_bins: Tensor
+) -> None:
+    """Validate the shapes/dtypes for the correct/wrong/... decomposition."""
+    assert matching_matrix.shape[0] == GT_matching_matrix_with_bins.shape[0], (
+        f"{matching_matrix.shape[0]} != {GT_matching_matrix_with_bins.shape[0]}"
+    )
+    assert matching_matrix.shape[1] == GT_matching_matrix_with_bins.shape[1] - 1, (
+        f"{matching_matrix.shape[1]} != {GT_matching_matrix_with_bins.shape[1] - 1}"
+    )
+    assert matching_matrix.shape[2] == GT_matching_matrix_with_bins.shape[2] - 1, (
+        f"{matching_matrix.shape[2]} != {GT_matching_matrix_with_bins.shape[2] - 1}"
+    )
+    assert matching_matrix.ndim == 3, f"{matching_matrix.ndim} != 3"
+    assert (
+        matching_matrix.dtype == th.bool
+        and GT_matching_matrix_with_bins.dtype == th.bool
+    ), (
+        f"{matching_matrix.dtype} != {th.bool} or {GT_matching_matrix_with_bins.dtype} != {th.bool}"
+    )
+
+
+def _known_and_match_masks(
+    GT_matching_matrix_with_bins: Tensor, GT_matching_matrix: Tensor
+) -> tuple[Tensor, Tensor]:
+    """Return ``(known_mask, any_match_mask)`` over the GT matching matrix.
+
+    known_mask: rows/cols that have any GT entry (a match *or* the unmatched bin).
+    any_match_mask: rows/cols that have an actual GT match (bins excluded).
+    """
+    B, H, W = GT_matching_matrix.shape
+    known_with_bins = GT_matching_matrix_with_bins.any(1, keepdim=True).repeat(
+        1, H + 1, 1
+    ) + GT_matching_matrix_with_bins.any(2, keepdim=True).repeat(1, 1, W + 1)
+    known_mask = known_with_bins[:, :-1, :-1]
+    any_match_mask = GT_matching_matrix.any(1, keepdim=True).repeat(
+        1, H, 1
+    ) + GT_matching_matrix.any(2, keepdim=True).repeat(1, 1, W)
+    return known_mask, any_match_mask
 
 
 def compute_correct_wrong_mismatched_inexistent_unsure_matches(
@@ -520,52 +519,26 @@ def compute_correct_wrong_mismatched_inexistent_unsure_matches(
     Returns:
         MatchingMatrixExtra
     """
-    assert (
-        matching_matrix.shape[0] == GT_matching_matrix_with_bins.shape[0]
-    ), f"{matching_matrix.shape[0]} != {GT_matching_matrix_with_bins.shape[0]}"
-    assert (
-        matching_matrix.shape[1] == GT_matching_matrix_with_bins.shape[1] - 1
-    ), f"{matching_matrix.shape[1]} != {GT_matching_matrix_with_bins.shape[1] - 1}"
-    assert (
-        matching_matrix.shape[2] == GT_matching_matrix_with_bins.shape[2] - 1
-    ), f"{matching_matrix.shape[2]} != {GT_matching_matrix_with_bins.shape[2] - 1}"
-    assert matching_matrix.ndim == 3, f"{matching_matrix.ndim} != 3"
-    assert (
-        matching_matrix.dtype == th.bool
-        and GT_matching_matrix_with_bins.dtype == th.bool
-    ), f"{matching_matrix.dtype} != {th.bool} or {GT_matching_matrix_with_bins.dtype} != {th.bool}"
+    _assert_ccw_inputs(matching_matrix, GT_matching_matrix_with_bins)
 
     GT_matching_matrix = GT_matching_matrix_with_bins[:, :-1, :-1]
-    B, H, W = GT_matching_matrix.shape
-
     matching_matrix_correct = matching_matrix * GT_matching_matrix
+    known_mask, any_match_mask = _known_and_match_masks(
+        GT_matching_matrix_with_bins, GT_matching_matrix
+    )
 
-    # ? known_mask is true for each row and column where there is a one, either as match or in the bin
-    known_mask_with_bins = GT_matching_matrix_with_bins.any(1, keepdim=True).repeat(
-        1, H + 1, 1
-    ) + GT_matching_matrix_with_bins.any(2, keepdim=True).repeat(1, 1, W + 1)
-    known_mask = known_mask_with_bins[:, :-1, :-1]
-
-    # ? match_mask is true for each row and column where there is a GT match
-    any_match_mask = GT_matching_matrix.any(1, keepdim=True).repeat(
-        1, H, 1
-    ) + GT_matching_matrix.any(2, keepdim=True).repeat(1, 1, W)
-
-    # ? matching_matrix_unsure is true when one of the proposed matches does not correspond either to a match or to an unmatch
+    # unsure: a proposed match that is neither a known match nor a known unmatch
     matching_matrix_unsure = matching_matrix * ~known_mask
-
-    # ? matching_matrix_wrong is true when a proposed match is wrong (either a mismatch or inexistent)
+    # wrong: a proposed match at a known position that is not the GT match
     matching_matrix_wrong = (
         (matching_matrix ^ GT_matching_matrix) * matching_matrix
     ) * known_mask
-
-    # ? mismatch_mask is true when a point that actually had a possible correct match is mismatched
+    # mismatched: wrong, but the point did have a possible correct match
     matching_matrix_mismatched = matching_matrix_wrong * any_match_mask
-
-    # ? inexistent_mask is true when two keypoints that had not GT match are matched
+    # inexistent: wrong, between two points that had no GT match at all
     matching_matrix_inexistent = matching_matrix_wrong * ~any_match_mask
 
-    output = MatchingMatrixExtra(
+    return MatchingMatrixExtra(
         matching_matrix,
         matching_matrix_correct,
         matching_matrix_wrong,
@@ -573,4 +546,3 @@ def compute_correct_wrong_mismatched_inexistent_unsure_matches(
         matching_matrix_inexistent,
         matching_matrix_unsure,
     )
-    return output

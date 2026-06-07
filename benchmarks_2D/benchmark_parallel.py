@@ -94,63 +94,75 @@ class Benchmark:
                 "graz4k",
             ]
             and scaling_factor == 1
-        )  # repeatability only for MegaDepth and GHR
+        )  # repeatability only for MegaDepth and Graz4K
         self.device = device
         self.px_thrs = px_thrs
 
         s = " with repeatability computation" if self.compute_repeatability else ""
         logger.info(f"Benchmarking {self.benchmark_name}{s}.")
 
-        # Load pairs and paths
+        self._load_calibrated_pairs()
+        self._resolve_dataset_paths()
+        self.matcher_params = {"min_score": min_score, "ratio_test": ratio_test}
+        self._load_precomputed_features()
+
+    def _load_calibrated_pairs(self):
+        """Load calibrated pairs, drop the header, and apply scene filters."""
         self.dataset_path = abs_root / self.dataset_path
         with open(self.dataset_path / "pairs_calibrated.txt", "r") as f:
             self.pairs_calibrated = f.read().splitlines()
 
         # skip header starting with #
         self.pairs_calibrated = [p for p in self.pairs_calibrated if p and p[0] != "#"]
-        logger.info(
-            f"Loaded {len(self.pairs_calibrated):,} calibrated pairs from {self.dataset_path/'pairs_calibrated.txt'}"
-        )
 
-        # self.pairs_calibrated = self.pairs_calibrated[:100]  # for quick testing
+        # exlude some scenes for terrasky testing
+        scenes = ["graz_clocktower", "graz_main_square", "graz_castle"]
+        self.pairs_calibrated = [
+            p for p in self.pairs_calibrated if not any(s in p for s in scenes)
+        ]
+
+        logger.info(
+            f"Loaded {len(self.pairs_calibrated):,} calibrated pairs from {self.dataset_path / 'pairs_calibrated.txt'}"
+        )
 
         if self.ghr_partial:
             scene = "graz_main_square"  # small scene for quick testing
             self.pairs_calibrated = [p for p in self.pairs_calibrated if scene in p]
             logger.info(f"Using only pairs from {scene} for GHR partial benchmark.")
 
-        if benchmark_name.lower() == "megadepth1500":
+    def _resolve_dataset_paths(self):
+        """Resolve image/depth/views paths for the configured benchmark."""
+        name = self.benchmark_name.lower()
+        if name == "megadepth1500":
             self.images_path = self.dataset_path / "images"
             self.depths_path = self.dataset_path / "depths"
             self.views_path = self.dataset_path / "views.txt"
             self.views_dict = parse_poses(self.views_path, self.benchmark_name)
 
-        elif benchmark_name.lower() in ["megadepth_air2ground", "megadepth_view"]:
+        elif name in ["megadepth_air2ground", "megadepth_view"]:
             self.images_path = self.dataset_path / "images"
             self.views_path = self.dataset_path / "views.txt"
             self.views_dict = parse_poses(self.views_path, self.benchmark_name)
 
-        elif benchmark_name.lower() == "scannet1500":
+        elif name == "scannet1500":
             self.images_path = self.dataset_path
 
-        elif benchmark_name.lower() == "graz4k":
+        elif name == "graz4k":
             self.images_path = self.dataset_path
             self.depths_path = self.dataset_path
             self.views_path = self.dataset_path / "views.txt"
             self.views_dict = parse_poses(self.views_path, self.benchmark_name)
 
-        elif benchmark_name.lower() == "terrasky3d":
+        elif name == "terrasky3d":
             self.images_path = self.dataset_path
             self.views_path = self.dataset_path / "views.txt"
             self.views_dict = parse_poses(self.views_path, self.benchmark_name)
 
         else:
-            raise ValueError(f"Unknown dataset name: {benchmark_name}")
+            raise ValueError(f"Unknown dataset name: {self.benchmark_name}")
 
-        # Matcher params
-        self.matcher_params = {"min_score": min_score, "ratio_test": ratio_test}
-
-        # Load precomputed features if provided
+    def _load_precomputed_features(self):
+        """Load precomputed keypoints/descriptors if a feature path was given."""
         if self.feature_path is not None:
             self.feature_path = Path(self.feature_path)
             self.keypoints_dict = torch.load(
@@ -201,43 +213,39 @@ class Benchmark:
                 descriptors_dict[img_name] = out.des.detach().cpu()
 
                 if self.compute_repeatability:
-                    # load depth
-                    if self.benchmark_name == "megadepth1500":
-                        Z_path = self.depths_path / f"{img_name.split('.')[0]}.h5"
-                    elif self.benchmark_name == "graz4k":
-                        scene, _, cam, image_name = img_name.split("/")
-                        Z_path = (
-                            self.depths_path
-                            / scene
-                            / "depth"
-                            / cam
-                            / f"{image_name.split('.')[0]}.h5"
-                        )
-
-                    Z = load_depth(
-                        Z_path,
-                        scale_factor=self.scaling_factor,
-                        target=out.kpts,
+                    keypoints_dict[img_name]["depth"] = self._sample_keypoint_depth(
+                        wrapper, img_name, out.kpts
                     )
-
-                    Z_sampled, _ = wrapper.grid_sample_nan(
-                        out.kpts[None], Z[None], mode="nearest"
-                    )
-                    keypoints_dict[img_name]["depth"] = Z_sampled[0].detach()
 
             except Exception as e:
-                logger.info(f"Error processing {img_name}: {e}")
+                logger.warning(f"Error processing {img_name}: {e}")
                 continue
 
             # This might slow down a bit, but some methods might go OOM. Don't use if not needed
             if self.oom_safe:
-                if self.compute_repeatability:
-                    del Z, Z_sampled
                 del out, img
                 gc.collect()
                 torch.cuda.empty_cache()
 
         return keypoints_dict, descriptors_dict
+
+    def _sample_keypoint_depth(self, wrapper, img_name, kpts):
+        """Load the depth map for an image and sample it at the keypoints."""
+        if self.benchmark_name == "megadepth1500":
+            Z_path = self.depths_path / f"{img_name.split('.')[0]}.h5"
+        elif self.benchmark_name == "graz4k":
+            scene, _, cam, image_name = img_name.split("/")
+            Z_path = (
+                self.depths_path
+                / scene
+                / "depth"
+                / cam
+                / f"{image_name.split('.')[0]}.h5"
+            )
+
+        Z = load_depth(Z_path, scale_factor=self.scaling_factor, target=kpts)
+        Z_sampled, _ = wrapper.grid_sample_nan(kpts[None], Z[None], mode="nearest")
+        return Z_sampled[0].detach()
 
     def save_features_to_intermediate(self, keypoints_dict, descriptors_dict, key):
         """Save extracted features to intermediate directory.
@@ -283,14 +291,29 @@ class Benchmark:
             )
             pair_data.append(((img1, img2), K1, K2, R, t))
 
-        # Create matcher
+        matches_dict = self._match_pairs(pair_data, keypoints_dict, descriptors_dict)
+        rep_results = (
+            self._compute_repeatability(pair_data, keypoints_dict)
+            if self.compute_repeatability
+            else {}
+        )
+        return matches_dict, rep_results
+
+    def _match_pairs(self, pair_data, keypoints_dict, descriptors_dict):
+        """Run the matcher over every prepared pair and collect pose-estimation data."""
         matcher = MNN(**self.matcher_params)
-
-        # Batch matching
         matches_dict = {}
-
+        skipped = 0
         for (img1, img2), K1, K2, R, t in tqdm(pair_data, desc="Matching pairs"):
-            # Get features
+            # An image whose feature extraction failed is absent from the dicts;
+            # skip the pair instead of crashing on a KeyError downstream.
+            if not all(
+                img in keypoints_dict and img in descriptors_dict
+                for img in (img1, img2)
+            ):
+                skipped += 1
+                continue
+
             kpts1 = keypoints_dict[img1]["kpts"]
             kpts2 = keypoints_dict[img2]["kpts"]
             desc1 = descriptors_dict[img1].to(self.device)
@@ -301,10 +324,7 @@ class Benchmark:
                 K1[:2, :3] /= self.scaling_factor
                 K2[:2, :3] /= self.scaling_factor
 
-            # Match
             matches = matcher.match([desc1], [desc2])[0].matches.cpu()
-
-            # Store for pose estimation
             matches_dict[(img1, img2)] = {
                 "matches": matches,
                 "kpts1": kpts1.cpu().numpy(),
@@ -320,74 +340,69 @@ class Benchmark:
                 gc.collect()
                 torch.cuda.empty_cache()
 
-        # Compute repeatability
-        if self.compute_repeatability:
-            rep_results = {
-                **{f"rep_{int(pix)}": [] for pix in self.px_thrs},
-                **{f"rep_mnn_{int(pix)}": [] for pix in self.px_thrs},
-            }
+        if skipped:
+            logger.warning(
+                "Skipped %d/%d pairs with missing features (extraction failed).",
+                skipped,
+                len(pair_data),
+            )
+        return matches_dict
 
-            for pair in tqdm(
-                pair_data, desc="Repeatability"
-            ):  # runs in ~5s with 2048kpts, batching it might be even faster
-                img1, img2 = pair[:1][0]
+    def _pair_repeatability(self, pair, keypoints_dict):
+        """Compute the repeatability dict for a single image pair."""
+        img1, img2 = pair[:1][0]
 
-                kpts1 = keypoints_dict[img1]["kpts"]
-                Z1 = keypoints_dict[img1]["depth"]
-                K1 = self.views_dict[img1]["K"]
-                P1 = self.views_dict[img1]["P"]
-                img1_size = self.views_dict[img1]["image_size"]
+        kpts1 = keypoints_dict[img1]["kpts"]
+        Z1 = keypoints_dict[img1]["depth"]
+        K1 = self.views_dict[img1]["K"]
+        P1 = self.views_dict[img1]["P"]
+        img1_size = self.views_dict[img1]["image_size"]
 
-                kpts2 = keypoints_dict[img2]["kpts"]
-                Z2 = keypoints_dict[img2]["depth"]
-                K2 = self.views_dict[img2]["K"]
-                P2 = self.views_dict[img2]["P"]
-                img2_size = self.views_dict[img2]["image_size"]
+        kpts2 = keypoints_dict[img2]["kpts"]
+        Z2 = keypoints_dict[img2]["depth"]
+        K2 = self.views_dict[img2]["K"]
+        P2 = self.views_dict[img2]["P"]
+        img2_size = self.views_dict[img2]["image_size"]
 
-                rep = compute_repeatabilities_from_kpts(
-                    kpts1[None].float().to(self.device),
-                    kpts2[None].float().to(self.device),
-                    K1[None].float().to(self.device),
-                    K2[None].float().to(self.device),
-                    Z1[None].float().to(self.device),
-                    Z2[None].float().to(self.device),
-                    P1[None].float().to(self.device),
-                    P2[None].float().to(self.device),
-                    img1_shape=img1_size,
-                    img2_shape=img2_size,
-                    px_thrs=self.px_thrs,
-                )
+        return compute_repeatabilities_from_kpts(
+            kpts1[None].float().to(self.device),
+            kpts2[None].float().to(self.device),
+            K1[None].float().to(self.device),
+            K2[None].float().to(self.device),
+            Z1[None].float().to(self.device),
+            Z2[None].float().to(self.device),
+            P1[None].float().to(self.device),
+            P2[None].float().to(self.device),
+            img1_shape=img1_size,
+            img2_shape=img2_size,
+            px_thrs=self.px_thrs,
+        )
 
-                for b in rep:
-                    for k in rep[b]:
-                        rep_results[k].append(rep[b][k])
+    def _compute_repeatability(self, pair_data, keypoints_dict):
+        """Compute repeatability metrics averaged over all pairs."""
+        rep_results = {
+            **{f"rep_{int(pix)}": [] for pix in self.px_thrs},
+            **{f"rep_mnn_{int(pix)}": [] for pix in self.px_thrs},
+        }
 
-                # clean up
-                if self.oom_safe:
-                    del (
-                        kpts1,
-                        kpts2,
-                        Z1,
-                        Z2,
-                        K1,
-                        K2,
-                        P1,
-                        P2,
-                        img1,
-                        img2,
-                        img1_size,
-                        img2_size,
-                        rep,
-                    )
-                    gc.collect()
-                    torch.cuda.empty_cache()
+        # runs in ~5s with 2048kpts, batching it might be even faster
+        for pair in tqdm(pair_data, desc="Repeatability"):
+            rep = self._pair_repeatability(pair, keypoints_dict)
 
-            # average over all pairs
-            for k in rep_results:
-                rep_results[k] = sum(rep_results[k]) / len(rep_results[k])
-        else:
-            rep_results = {}
-        return matches_dict, rep_results
+            for b in rep:
+                for k in rep[b]:
+                    rep_results[k].append(rep[b][k])
+
+            # clean up
+            if self.oom_safe:
+                del rep
+                gc.collect()
+                torch.cuda.empty_cache()
+
+        # average over all pairs
+        for k in rep_results:
+            rep_results[k] = sum(rep_results[k]) / len(rep_results[k])
+        return rep_results
 
     def batch_pose_estimation(self, matches_dict):
         """Perform pose estimation in parallel."""
@@ -440,7 +455,7 @@ class Benchmark:
             )
 
             # Match
-            matches, kpts1, kpts2 = wrapper._extract(
+            matches, kpts1, kpts2 = wrapper.match_pair(
                 self.images_path / img1,
                 self.images_path / img2,
                 max_kpts=self.max_kpts,
@@ -473,9 +488,7 @@ class Benchmark:
         fix_rng(seed=self.seed)
 
         # Create save key for features with timestamp (similar to GHR pattern)
-        features_save_key = None
-        if save_key:
-            features_save_key = f"{save_key}_{timestamp}"
+        features_save_key = f"{save_key}_{timestamp}" if save_key else None
 
         # Phase 1: Batch matching (with feature extraction if needed)
         wrapper.move_to(self.device)  # ensure wrapper is on the correct device
@@ -492,75 +505,64 @@ class Benchmark:
         # Phase 2: Parallel pose estimation as
         # results = (img1, img2, e_t, e_R, e_pose, inliers)
         results = self.batch_pose_estimation(matches_dict)
-        os.makedirs(
-            f"benchmarks_2D/{self.benchmark_name}/results/df_pairs", exist_ok=True
-        )
-        df_pairs_path = (
-            f"benchmarks_2D/{self.benchmark_name}/results/df_pairs/{save_key}.csv"
-        )
-        with open(df_pairs_path, "w") as f:
-            f.write("img1,img2,e_t,e_R,e_pose,inlier\n")
-            for r in results:
-                img1, img2, e_t, e_R, e_pose, inlier = r
-                f.write(f"{img1},{img2},{e_t},{e_R},{e_pose},{inlier}\n")
+        self._save_pair_results(results, save_key)
 
         wrapper.move_to(self.device)  # move back to original device
 
-        # Compute metrics
-        tot_e_pose = np.array([r[4] for r in results])
-        inliers = np.array([r[5] for r in results])
+        out = self._summarize_pose_results(results)
+        if self.compute_repeatability:
+            out.update(rep_results)
+        self._round_metrics(out)
+        return out, timestamp
 
-        thresholds = [5, 10, 20]
-        auc = pose_auc(tot_e_pose, thresholds)
-        # acc_5 = (tot_e_pose < 5).mean()
-        # acc_10 = (tot_e_pose < 10).mean()
-        # acc_15 = (tot_e_pose < 15).mean()
-        # acc_20 = (tot_e_pose < 20).mean()
-
-        unregistred = []
-        for r in results:
-            img1, img2, e_t, e_R, e_pose, inlier = r
-            if e_pose >= 180:
-                unregistred.append(r)
+    def _save_pair_results(self, results, save_key):
+        """Write per-pair errors and the unregistered subset to CSV files."""
+        base = f"benchmarks_2D/{self.benchmark_name}/results"
+        os.makedirs(f"{base}/df_pairs", exist_ok=True)
+        with open(f"{base}/df_pairs/{save_key}.csv", "w") as f:
+            f.write("img1,img2,e_t,e_R,e_pose,inlier\n")
+            for img1, img2, e_t, e_R, e_pose, inlier in results:
+                f.write(f"{img1},{img2},{e_t},{e_R},{e_pose},{inlier}\n")
 
         # optional, save images not registered
-        os.makedirs(
-            f"benchmarks_2D/{self.benchmark_name}/results/not_registered", exist_ok=True
-        )
-        with open(
-            f"benchmarks_2D/{self.benchmark_name}/results/not_registered/{save_key}.csv",
-            "w",
-        ) as f:
+        os.makedirs(f"{base}/not_registered", exist_ok=True)
+        with open(f"{base}/not_registered/{save_key}.csv", "w") as f:
             f.write("img1,img2,e_t,e_R,e_pose,inlier\n")
-            for r in results:
-                img1, img2, e_t, e_R, e_pose, inlier = r
+            for img1, img2, e_t, e_R, e_pose, inlier in results:
                 if e_pose >= 180:
                     f.write(f"{img1},{img2},{e_t},{e_R},{e_pose},{inlier}\n")
 
-        out = {
+    @staticmethod
+    def _summarize_pose_results(results):
+        """Aggregate per-pair results into AUC / inlier / registration metrics."""
+        tot_e_pose = np.array([r[4] for r in results])
+        inliers = np.array([r[5] for r in results])
+        auc = pose_auc(tot_e_pose, [5, 10, 20])
+        unregistred = [r for r in results if r[4] >= 180]
+        if unregistred:
+            logger.warning(
+                "%d/%d pairs failed pose estimation (unregistered).",
+                len(unregistred),
+                len(results),
+            )
+        return {
             "inliers": np.mean(inliers),
             "unregistered_pairs": int(len(unregistred)),
             "total_pairs": int(len(results)),
             "auc_5": auc[0],
             "auc_10": auc[1],
             "auc_20": auc[2],
-            # "map_5": acc_5,
-            # "map_10": np.mean([acc_5, acc_10]),
-            # "map_20": np.mean([acc_5, acc_10, acc_15, acc_20]),
         }
 
-        if self.compute_repeatability:
-            out.update(rep_results)
-
-        # Final rounding
+    @staticmethod
+    def _round_metrics(out):
+        """Round metrics in place: counts to 1 decimal, rates scaled to percent."""
         for k in out:
             out[k] = (
                 round(out[k], 1)
-                if (k == "inliers" or k == "unregistered_pairs" or k == "total_pairs")
+                if k in ("inliers", "unregistered_pairs", "total_pairs")
                 else round(out[k] * 100, 1)
             )
-
-        return out, timestamp
 
 
 if __name__ == "__main__":
@@ -768,5 +770,5 @@ if __name__ == "__main__":
         json.dump(data, f)
 
     logger.info(
-        f"Results computed in {time.time()-s:.1f}s and saved to {results_path/'results.json'}\n\n"
+        f"Results computed in {time.time() - s:.1f}s and saved to {results_path / 'results.json'}\n\n"
     )
