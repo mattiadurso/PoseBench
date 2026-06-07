@@ -24,3 +24,4 @@ gen_ghr_txt.ipynb
 benchmarks_2D/hpatches/run_batch.py
 */strek/*
 !sandesc_models/sandesc
+benchmarks_3D/benchmark_pose.py

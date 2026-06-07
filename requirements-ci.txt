@@ -1,0 +1,17 @@
+# CI-only dependency closure for the tests/ suite, CPU-only.
+#
+# This is NOT the full project environment. Running the actual benchmarks needs
+# CUDA PyTorch, pycolmap, and the cloned methods/ checkouts (see README.md).
+# It is the exact import closure of tests/ at collection time, so the CPU test
+# job in .github/workflows/ci.yml stays green (GPU-only tests skip themselves).
+#
+# torch is installed separately in the workflow from the PyTorch CPU index
+# (https://download.pytorch.org/whl/cpu) to avoid pulling multi-GB CUDA wheels.
+numpy
+opencv-python-headless
+h5py
+matplotlib
+pandas
+joblib
+tqdm
+pytest

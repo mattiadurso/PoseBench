@@ -1,0 +1,30 @@
+# Pre-commit hooks for PoseBench.
+#
+# Setup (once):   pip install pre-commit && pre-commit install
+# Run manually:   pre-commit run --all-files
+#
+# Hooks run in isolated environments managed by pre-commit, so contributors do
+# not need ruff/pytest in their active env. Mirrors the CI lint + type-hint gate.
+repos:
+  - repo: local
+    hooks:
+      # Lint with the same ruff version and pyproject config as CI.
+      # --force-exclude makes ruff honour [tool.ruff] extend-exclude even when
+      # pre-commit passes explicit staged filenames (e.g. files under methods/).
+      - id: ruff
+        name: ruff lint
+        entry: ruff check --force-exclude
+        language: python
+        additional_dependencies: ["ruff==0.13.1"]
+        types_or: [python]
+        require_serial: true
+
+      # Enforce full type-annotation coverage on core modules + wrappers.
+      # Pure-ast scan: needs only pytest, so it runs in a tiny isolated env.
+      - id: type-hint-coverage
+        name: type-hint coverage
+        entry: pytest tests/test_type_hints.py -q
+        language: python
+        additional_dependencies: ["pytest"]
+        pass_filenames: false
+        always_run: true

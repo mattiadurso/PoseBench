@@ -1,0 +1,35 @@
+# Ruff configuration for PoseBench first-party code.
+# Vendored third-party model repositories under methods/, sandesc_models/, and the
+# image-matching-benchmark tree are excluded: they are upstream clones and are not
+# maintained here.
+
+[tool.ruff]
+line-length = 88
+target-version = "py310"
+
+extend-exclude = [
+    "methods",
+    "sandesc_models",
+    "__bin",
+    "benchmarks_2D/imc/image-matching-benchmark",
+    "benchmarks_2D/terrasky3d",
+    "*.ipynb",  # interactive notebooks (demos/scratch), not maintained source
+]
+
+[tool.ruff.lint]
+# Default rule set: pyflakes (F) and a subset of pycodestyle (E4/E7/E9).
+# Import sorting (I) is intentionally left off: several wrappers rely on
+# side-effect imports (e.g. mast3r's path_to_dust3r) whose order must not change.
+select = ["E4", "E7", "E9", "F"]
+
+[tool.ruff.lint.per-file-ignores]
+# These runner/wrapper scripts must perform sys.path / os.environ / warnings setup
+# before importing vendored model packages, which legitimately triggers E402.
+"wrappers/*_wrapper.py" = ["E402"]
+"benchmarks_2D/benchmark_parallel.py" = ["E402"]
+"benchmarks_2D/hpatches/hpatches_benchmark.py" = ["E402"]
+"benchmarks_2D/imc/imc_benchmark.py" = ["E402"]
+"benchmarks_2D/imc/utils_imc_benchmark.py" = ["E402"]
+
+[tool.ruff.lint.pydocstyle]
+convention = "google"
