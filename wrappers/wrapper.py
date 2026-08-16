@@ -345,6 +345,35 @@ class MethodWrapper(ABC):
         output = output.mask(valid_mask)
         return output
 
+    @torch.inference_mode()
+    def extract_batch(
+        self,
+        imgs: Tensor,
+        max_kpts: Union[float, int],
+        need_des: bool = True,
+        chunk: Optional[int] = None,
+    ) -> List[MethodOutput]:
+        """Extract features for a batch of images, one output per image.
+
+        Generic fallback that runs :meth:`extract` image by image. Wrappers
+        whose model natively supports batched input should override this to
+        honor ``chunk`` (images per model call) and ``need_des=False`` (skip
+        the descriptor head).
+
+        Args:
+            imgs: Input images, ``(B, C, H, W)``.
+            max_kpts: Maximum number of keypoints per image.
+            need_des: Whether descriptors are needed. The fallback computes
+                them regardless; overrides may skip the descriptor head when
+                False.
+            chunk: Images per model call. Ignored by the per-image fallback.
+
+        Returns:
+            A list of ``B`` border-filtered :class:`MethodOutput`.
+        """
+        del need_des, chunk  # per-image fallback: nothing to tune
+        return [self.extract(img, max_kpts) for img in imgs]
+
     def grid_sample_nan(
         self, xy: Tensor, img: Tensor, mode: str = "nearest"
     ) -> Tuple[Tensor, Tensor]:

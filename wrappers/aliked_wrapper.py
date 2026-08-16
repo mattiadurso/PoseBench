@@ -3,7 +3,7 @@
 import sys
 import torch
 from pathlib import Path
-from typing import Optional
+from typing import List, Optional
 
 # Add method-specific path before importing from it
 method_path = Path(__file__).resolve().parents[1] / "methods/aliked"
@@ -91,3 +91,67 @@ class AlikedWrapper(MethodWrapper):
                 des = self.grid_sample_nan(kpts[None], des_vol, mode="nearest")[0][0].T
 
         return MethodOutput(kpts=kpts, kpts_scores=scores, des=des)
+
+    @torch.inference_mode()
+    def extract_batch(
+        self,
+        imgs: torch.Tensor,
+        max_kpts: int = 2048,
+        need_des: bool = True,
+        chunk: Optional[int] = None,
+    ) -> List[MethodOutput]:
+        """Batched extraction: one model call per ``chunk`` images.
+
+        Args:
+            imgs (Tensor): Input images of shape (B, C, H, W).
+            max_kpts (int): Maximum number of keypoints per image.
+            need_des (bool): When False, skip the SDDH descriptor head and
+                return keypoints/scores only (``des`` is None).
+            chunk (int, optional): Images per model call; None sends the whole
+                batch at once. Lower it to bound peak activation memory.
+        Returns:
+            List[MethodOutput]: One border-filtered output per image.
+        """
+        if self.custom_descriptor is not None:
+            # The custom-descriptor path is per-image; use the generic loop.
+            return super().extract_batch(imgs, max_kpts, need_des=need_des, chunk=chunk)
+
+        # Aliked requires max kpts to be set during initialization,
+        # this allows changing it at any moment
+        if self.max_kpts != max_kpts:
+            custom_descriptor = self.custom_descriptor
+            self.__init__(device=self.device, max_kpts=max_kpts, border=self.border)
+            self.custom_descriptor = custom_descriptor
+
+        B, _, H, W = imgs.shape
+        chunk = B if chunk is None else chunk
+        outputs = []
+        for i in range(0, B, chunk):
+            x = imgs[i : i + chunk]
+            with torch.amp.autocast(
+                device_type="cuda", dtype=self.amp_dtype, enabled=self.use_amp
+            ):
+                if need_des:
+                    out = self.model(x)
+                    kpts_l, scores_l, des_l = (
+                        out["keypoints"],
+                        out["scores"],
+                        out["descriptors"],
+                    )
+                else:
+                    _, score_map = self.model.extract_dense_map(x)
+                    kpts_l, scores_l, _ = self.model.dkd(score_map)
+                    des_l = [None] * len(kpts_l)
+
+            for kpts, scores, des in zip(kpts_l, scores_l, des_l):
+                kpts = self.to_pixel_coords(kpts, H, W)
+                valid = (
+                    (kpts[:, 0] > self.border)
+                    & (kpts[:, 0] < W - self.border)
+                    & (kpts[:, 1] > self.border)
+                    & (kpts[:, 1] < H - self.border)
+                )
+                outputs.append(
+                    MethodOutput(kpts=kpts, kpts_scores=scores, des=des).mask(valid)
+                )
+        return outputs
