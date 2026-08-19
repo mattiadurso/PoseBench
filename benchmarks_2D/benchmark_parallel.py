@@ -68,6 +68,8 @@ class Benchmark:
         scaling_factor: float = 1.0,
         ghr_partial: bool = False,
         feature_path: str = None,
+        reuse_kpts_path: str = None,
+        save_descriptors: bool = False,
         compute_repeatability: bool = False,
         device: str = "cuda",
         oom_safe: bool = False,
@@ -86,6 +88,8 @@ class Benchmark:
         self.ghr_partial = ghr_partial
         self.oom_safe = oom_safe
         self.feature_path = feature_path
+        self.reuse_kpts_path = reuse_kpts_path
+        self.save_descriptors = save_descriptors
         if scaling_factor != 1 and compute_repeatability:
             logger.warning(
                 "Repeatability computation might be incorrect when "
@@ -121,10 +125,15 @@ class Benchmark:
         self.pairs_calibrated = [p for p in self.pairs_calibrated if p and p[0] != "#"]
 
         # exlude some scenes for terrasky testing
-        scenes = ["graz_clocktower", "graz_main_square", "graz_castle"]
-        self.pairs_calibrated = [
-            p for p in self.pairs_calibrated if not any(s in p for s in scenes)
-        ]
+        # Only when testing on terrasky3d, whose test split contains these Graz
+        # scenes. Applying it unconditionally also stripped them from graz4k
+        # itself, which dropped ~2,000 of its 4,411 pairs and made --ghr-partial
+        # (which then selects graz_main_square) return zero pairs.
+        if self.benchmark_name.lower() == "terrasky3d":
+            scenes = ["graz_clocktower", "graz_main_square", "graz_castle"]
+            self.pairs_calibrated = [
+                p for p in self.pairs_calibrated if not any(s in p for s in scenes)
+            ]
 
         logger.info(
             f"Loaded {len(self.pairs_calibrated):,} calibrated pairs from {self.dataset_path / 'pairs_calibrated.txt'}"
@@ -188,6 +197,28 @@ class Benchmark:
             self.descriptors_dict = None
             logger.info("Extracting features using wrapper")
 
+        # Keypoints-only reuse. Unlike feature_path (which also loads
+        # descriptors and skips extraction entirely), this keeps extraction but
+        # feeds the stored keypoints to the detector as custom_kpts, so only the
+        # descriptor stage runs. Intended for a custom-descriptor run that must
+        # describe exactly the keypoints a previous baseline run detected --
+        # which is what SANDesc does by construction. Keypoint *scores* are not
+        # stored and are not used downstream (_match_pairs reads only "kpts"
+        # and the descriptors), so discarding them is safe.
+        if self.reuse_kpts_path is not None:
+            self.reuse_kpts_path = Path(self.reuse_kpts_path)
+            self.reuse_kpts_dict = torch.load(
+                self.reuse_kpts_path / "keypoints.pt",
+                map_location="cpu",
+                weights_only=False,
+            )
+            logger.info(
+                f"Reusing keypoints from {self.reuse_kpts_path / 'keypoints.pt'} "
+                f"({len(self.reuse_kpts_dict):,} images); descriptors recomputed."
+            )
+        else:
+            self.reuse_kpts_dict = None
+
     def extract_features_with_wrapper(self, wrapper):
         """Extract features using the wrapper."""
 
@@ -211,8 +242,18 @@ class Benchmark:
             try:
                 img = wrapper.load_image(img_path, scaling=self.scaling_factor)
 
+                custom_kpts = None
+                if self.reuse_kpts_dict is not None:
+                    stored = self.reuse_kpts_dict.get(img_name)
+                    if stored is None:
+                        logger.warning(
+                            f"{img_name} missing from reused keypoints, detecting"
+                        )
+                    else:
+                        custom_kpts = stored["kpts"]
+
                 with torch.no_grad():
-                    out = wrapper.extract(img, self.max_kpts)
+                    out = wrapper.extract(img, self.max_kpts, custom_kpts=custom_kpts)
 
                 keypoints_dict[img_name] = {"kpts": out.kpts.detach().cpu()}
                 descriptors_dict[img_name] = out.des.detach().cpu()
@@ -265,10 +306,20 @@ class Benchmark:
         descriptors_file = intermediate_path / "descriptors.pt"
 
         torch.save(keypoints_dict, keypoints_file)
-        torch.save(descriptors_dict, descriptors_file)
 
-        logger.info(f"Features saved: {keypoints_file} and {descriptors_file}")
-        return keypoints_file, descriptors_file
+        # Descriptors are not saved by default: they dwarf everything else and
+        # fill the disk. At 30k keypoints one run writes ~34 GB of descriptors
+        # against ~0.7 GB of keypoints, so a handful of runs exhausts the drive
+        # (this happened: 111 GB of caches, disk at 98%). Keypoints are kept
+        # because --reuse-kpts needs only those. Pass --save-descriptors if you
+        # specifically need --features, which reloads both and skips extraction.
+        if self.save_descriptors:
+            torch.save(descriptors_dict, descriptors_file)
+            logger.info(f"Features saved: {keypoints_file} and {descriptors_file}")
+            return keypoints_file, descriptors_file
+
+        logger.info(f"Keypoints saved: {keypoints_file} (descriptors not saved)")
+        return keypoints_file, None
 
     def batch_match_all_pairs(self, wrapper, save_key=None):
         """Match all pairs in batch mode."""
@@ -604,9 +655,9 @@ if __name__ == "__main__":
     parser.add_argument(
         "--max-kpts",
         type=int,
-        choices=[2048, 4096, 8000],
+        choices=[2048, 4096, 8000, 30000],
         default=2048,
-        help="Maximum keypoints (allowed values: 2048, 4096, or 8000)",
+        help="Maximum keypoints (allowed values: 2048, 4096, 8000, or 30000)",
     )
     parser.add_argument("--run-tag", type=str, default=None, help="Tag for this run")
     parser.add_argument(
@@ -630,6 +681,27 @@ if __name__ == "__main__":
         "--features",
         default=None,
         help="Path to precomputed features (optional)",
+    )
+
+    parser.add_argument(
+        "--save-descriptors",
+        action="store_true",
+        help=(
+            "Also cache descriptors.pt alongside keypoints.pt. Off by default: "
+            "at 30k keypoints this is ~34 GB per run. Only needed for --features."
+        ),
+    )
+
+    parser.add_argument(
+        "--reuse-kpts",
+        default=None,
+        help=(
+            "Path to a previous run's intermediate dir; reuse its keypoints.pt "
+            "and recompute descriptors. Unlike --features (which also reuses "
+            "descriptors and skips extraction), this only skips detection -- "
+            "use it for a --custom-desc run that must describe exactly the "
+            "keypoints a baseline run detected."
+        ),
     )
 
     parser.add_argument(
@@ -753,6 +825,8 @@ if __name__ == "__main__":
         scaling_factor=scaling_factor,
         ghr_partial=ghr_partial,
         feature_path=feature_path,
+        reuse_kpts_path=args.reuse_kpts,
+        save_descriptors=args.save_descriptors,
         compute_repeatability=compute_repeatability,
         device=device,
     )

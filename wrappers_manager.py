@@ -38,6 +38,21 @@ def get_wrappers_list():
 
 def _build_wrapper(name, device):
     """Construct the wrapper instance for ``name`` (without setting ``.name``)."""
+    # kornia variants are matched before the substring checks below, which would
+    # otherwise route "dedode-kornia" to the vendored DeDoDe wrapper. Both need
+    # kornia >= 0.8.3 (Python >= 3.11): use the `sandesc_kornia` env.
+    if name == "aliked-kornia":
+        from wrappers.aliked_kornia_wrapper import ALIKEDKorniaWrapper
+
+        return ALIKEDKorniaWrapper(device=device)
+
+    if name.startswith("dedode-kornia"):
+        from wrappers.dedode_kornia_wrapper import DeDoDeKorniaWrapper
+
+        # "dedode-kornia-B" selects the B descriptor; default is G.
+        descriptor = "B-upright" if name.endswith("-B") else "G-upright"
+        return DeDoDeKorniaWrapper(device=device, descriptor_weights=descriptor)
+
     if name in ("disk", "disk-kornia"):
         from wrappers.disk_wrapper import DiskWrapperKornia
 
